@@ -23,8 +23,19 @@ idata = op.prep(adata, out_f, cluster_key='region', is_human=True, coord_type='g
 # running SVI tests
 idata, abstract_idata = op.find_svi(idata, out_f)
 
+# visualize SVI
+op.vis.pattern_LRI(idata,show_SVI=10)
+```
+
+Outputs:
+
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/human_pdac_st_patterns.png)
+
+```python
 # combine SVI with p-value threshold
 svi_df, svi_df_strict = op.svi.combine_SVI(idata,threshold=0.01)
+
+# plot evaluation metrics
 op.svi.eva_SVI(idata, svi_df_strict)
 ```
 
