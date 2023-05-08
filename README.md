@@ -43,4 +43,17 @@ Outputs:
 
 ![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_metric.png)
 
+```python
+# transform SVI pattern from interfaces to spots
+op.svi.idata_pattern_to_spot(idata)
+
+# SVI-based spot clustering
+op.cl.unsupervised_spot_clust(idata, adata, n_cluster=7)
+```
+
+Outputs:
+
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_boundary.png)
+
+
 
