@@ -41,6 +41,6 @@ op.svi.eva_SVI(idata, svi_df_strict)
 
 Outputs:
 
-![Metrics](https://raw.githubusercontent.com/deepomicslab/SPIDER/main/demo/PDAC_metric.png?token=GHSAT0AAAAAACBPFQ4XH4T2QNOJUHZS7JGCZCYVLDQ)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_metric.png)
 
 
