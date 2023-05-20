@@ -3,8 +3,21 @@
 SPIDER constructs cell-cell interaction interfaces with minimized Dirichlet energy, models interface profiles with knowledge-graph-informed interaction signals, and identifies spatially variable signals with multiple probabilistic models.
 
 ## Install
+For python version of SPIDER, simply call:
 ```shell
 pip install spider-st
+```
+
+To also use the R packages in SPIDER, you need to first install:
+```shell
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("nnSVG")
+
+install.packages('devtools')
+devtools::install_github('xzhoulab/SPARK')
+devtools::install_github('linxihui/NNLM')
+devtools::install_github('ZJUFanLab/SpaTalk')
 ```
 
 ## Quick Start
