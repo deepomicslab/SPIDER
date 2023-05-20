@@ -8,8 +8,10 @@ import squidpy as sq
 import warnings
 warnings.filterwarnings('ignore')
 import time
+from importlib import resources
 
 def abstract(idata, n_neighbors=10):
+    # Method: Building abstract interfaces with self-organizing map
     from somde import SomNode
     df = idata.to_df().T
     corinfo = idata.obs
@@ -23,12 +25,43 @@ def abstract(idata, n_neighbors=10):
     idata = som_mapping(som, idata, df)
     return som, idata, meta_idata
 
+def som_mapping(som, idata, df):
+    bsmc = som.som.bmus
+    soml = []
+    for i in np.arange(bsmc.shape[0]):
+        u,v = bsmc[i]
+        soml.append(v*som.somn+u)
+    idata.obs['som_node'] = -1
+    ids = np.sort(np.unique(np.array(soml)))
+    count = 0
+    for i in ids:
+        idata.obs.loc[df.loc[:,np.array(soml)==i].columns,'som_node'] = count
+        count += 1
+    return idata
+
+def meta_pattern_to_idata(idata, meta_idata):
+    idata.obsm['pattern_score'] = meta_idata.obsm['pattern_score'][idata.obs['som_node'].to_numpy()]  
+    idata.var = meta_idata.var
+    idata.uns['nnSVG'] = meta_idata.uns['nnSVG']
+    idata.uns['SOMDE'] = meta_idata.uns['SOMDE']
+    idata.uns['SpatialDE'] = meta_idata.uns['SpatialDE']
+    idata.uns['SPARKX'] = meta_idata.uns['SPARKX']
+    idata.uns['scGCO'] = meta_idata.uns['scGCO']
+    idata.uns['moranI'] = meta_idata.uns['moranI']
+    idata.uns['gearyC'] = meta_idata.uns['gearyC']
+    print(f'Added key pattern_score in idata.obsm')   
+
 def find_svi(idata, out_f, overwrite, som=None):
+    # Method: Identifying spatially variable LR interactions
+    # Gaussian models
     svi_nnSVG(idata,out_f,overwrite)
-    svi_scGCO(idata,out_f,overwrite)
     svi_SOMDE(idata,out_f,overwrite, som=som)
-    svi_SPARKX(idata,out_f,overwrite)
     svi_SpatialDE2(idata,out_f,overwrite)
+    # Non-parametric covariance test
+    svi_SPARKX(idata,out_f,overwrite)
+    # HMRF
+    svi_scGCO(idata,out_f,overwrite)
+    # baseline auto-correlation metrics
     svi_moran(idata,out_f,overwrite)
     svi_geary(idata,out_f,overwrite)
 
@@ -81,26 +114,12 @@ def svi_nnSVG(idata, work_dir, overwrite=False):
             idata.obs[['row', 'col']].to_csv(meta_f)
         if (overwrite) | (not exists( f'{work_dir}nnSVG.csv')):
             t0=time.time()
-            os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f ../src/run_nnSVG.R {count_f} {meta_f} {work_dir}"'))
+            with resources.path("spider.R_script", "run_nnSVG.R") as pw_fn:
+                os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
             idata.uns['nnSVG_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}nnSVG.csv', index_col=0)
         idata.uns['nnSVG'] = result
         print(f'Added key nnSVG in idata.uns')
-    except:
-        pass
-    
-def svi_trendsceek(idata, work_dir, overwrite=False):
-    try:
-        count_f = f'{work_dir}idata_count.csv'
-        meta_f = f'{work_dir}idata_meta.csv'
-        if (overwrite) | ((not exists(count_f)) & (not exists(meta_f))):
-            idata.to_df().to_csv(count_f)
-            idata.obs[['row', 'col']].to_csv(meta_f)
-        if (overwrite) | (not exists( f'{work_dir}trendsceek.csv')):
-            os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f ../src/run_trendsceek.R {count_f} {meta_f} {work_dir}"'))
-        result = pd.read_csv(f'{work_dir}trendsceek.csv', index_col=0)
-        idata.uns['trendsceek'] = result
-        print(f'Added key trendsceek in idata.uns')
     except:
         pass
     
@@ -173,7 +192,8 @@ def svi_SPARKX(idata, work_dir, overwrite=False):
             idata.obs[['row', 'col']].to_csv(meta_f)
         if (overwrite) | (not exists( f'{work_dir}SPARKX.csv')):
             t0=time.time()
-            os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f ../src/run_SPARKX.R {count_f} {meta_f} {work_dir}"'))
+            with resources.path("spider.R_script", "run_SPARKX.R") as pw_fn:
+                os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
             idata.uns['SPARKX_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}SPARKX.csv', index_col=0)
         idata.uns['SPARKX'] = result
@@ -185,7 +205,7 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False):
     try:
         # if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')) | (not exists(f'{work_dir}SpatialDE_individual.csv')):
         if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')):
-            from src import SpatialDE as SpatialDE2
+            from spider import SpatialDE as SpatialDE2
             t0=time.time()
             svg_full, individual = SpatialDE2.test(idata, omnibus=False)
             svg_full = pd.concat([svg_full.set_index('gene'), individual.loc[individual.groupby('gene').lengthscale.idxmin()].set_index('gene')], axis=1)
@@ -196,8 +216,7 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False):
         idata.uns['SpatialDE'] = result
         print(f'Added key SpatialDE in idata.uns')
     except:
-        pass
-    
+        pass 
     
 def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
     try:
@@ -254,7 +273,7 @@ def combine_SVI_Fisher(idata, threshold=0.05):
     df_sub = df[df['adj_pvalue']<threshold]
     # df_sub = df_sub.loc[np.intersect1d(df_sub.index, idata.uns['SOMDE']['g'])]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
-    idata.varm['svi'] = df.loc[idata.var_names]
+    idata.uns['svi'] = df
     idata.var['is_svi'] = 0
     idata.var.loc[df_sub.index, 'is_svi'] = 1
     return df, df_sub
@@ -277,7 +296,7 @@ def combine_SVI_strict(idata, threshold=0.01):
     df = pd.concat(df, axis=1).fillna(1)
     df_sub = df[(df<threshold).all(axis=1)]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
-    idata.varm['svi'] = df.loc[idata.var_names]
+    idata.uns['svi'] = df
     idata.var['is_svi'] = 0
     idata.var.loc[df_sub.index, 'is_svi'] = 1
     return df, df_sub
@@ -287,12 +306,11 @@ def combine_SVI_somde(idata, threshold=0.01):
     df = idata.uns['SOMDE'].set_index('g')[['pval']].rename(columns = {'pval': 'SOMDE'}).fillna(1)
     df_sub = df[(df<threshold).all(axis=1)]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
-    idata.varm['svi'] = df.loc[idata.var_names]
+    idata.uns['svi'] = df
     idata.var['is_svi'] = 0
     idata.var.loc[df_sub.index, 'is_svi'] = 1
     return df, df_sub
     
-
 def eva_SVI(idata, svi_df_strict):
     import seaborn as sns
     dfs = [
@@ -322,12 +340,14 @@ class dotdict(dict):
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
 
+# SVI pattern generation with Gaussian process mixture model
 def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8):
-    from src import SpatialDE as SpatialDE2
+    from spider import SpatialDE as SpatialDE2
     allsignifgenes = svi_df_strict.index.to_numpy()
     if 'lengthscale' in idata.uns['SpatialDE'].columns:
         l=idata.uns['SpatialDE'].loc[allsignifgenes]['lengthscale'].to_list()
         if len(np.unique(l)) < 2:
+            allsignifgenes = np.intersect1d(allsignifgenes, idata.uns['SOMDE']['g'].to_numpy())
             l=idata.uns['SOMDE'].set_index('g').loc[allsignifgenes]['l'].to_list()
     else:
         l=idata.uns['SOMDE'].set_index('g').loc[allsignifgenes]['l'].to_list()
@@ -362,6 +382,10 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8):
     idata.var[[f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = 0
     idata.var.loc[allsignifgenes, [f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = upper_patterns.pattern_probabilities
     idata.obsm['pattern_score'] = upper_patterns.patterns
+    idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = 0
+    corr_df=pd.concat([idata.to_df(),pd.DataFrame(idata.obsm['pattern_score'],index=idata.obs_names)],axis=1).corr().loc[idata.var_names, range(idata.obsm['pattern_score'].shape[1])]
+    idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = corr_df.to_numpy()
+
     
 def SVI_patterns_v1(idata, svi_df_strict, components=5):
     import NaiveDE
@@ -377,31 +401,13 @@ def SVI_patterns_v1(idata, svi_df_strict, components=5):
     print('finished fitting')
     histology_results, patterns, prob = spatial_patterns(X, resid_expr, results, C=components,l=results['l'].median()+0.5, verbosity=1)
     return histology_results, patterns, prob
-
-def som_mapping(som, idata, df):
-    bsmc = som.som.bmus
-    soml = []
-    for i in np.arange(bsmc.shape[0]):
-        u,v = bsmc[i]
-        soml.append(v*som.somn+u)
-    idata.obs['som_node'] = -1
-    ids = np.sort(np.unique(np.array(soml)))
-    count = 0
-    for i in ids:
-        idata.obs.loc[df.loc[:,np.array(soml)==i].columns,'som_node'] = count
-        count += 1
-    return idata
-
-def meta_pattern_to_idata(idata, meta_idata):
-    idata.obsm['pattern_score'] = meta_idata.obsm['pattern_score'][idata.obs['som_node'].to_numpy()]  
-    print(f'Added key pattern_score in idata.obsm')     
     
 def idata_pattern_to_spot(idata):
     belonging = {}
     cells = idata.uns['cell_meta'].index
     for i in cells:
         belonging[i] = []
-    for pair in idata.obs.reset_index()[['index','A', 'B']].to_numpy():
+    for pair in idata.obs.reset_index()[['index', 'A', 'B']].to_numpy():
         belonging[pair[1]].append(pair[0])
         belonging[pair[2]].append(pair[0])
     score = pd.DataFrame(idata.obsm['pattern_score'], index=idata.obs_names)
@@ -469,7 +475,6 @@ def ELBO(Y, r, m, s2e, K, K_0, s2e_0, pi=None):
         - ln_Q_Z(r, r) - ln_Q_mu(K_0, r, s2e_0)
     
     return L
-
 
 def factor(K):
     S, U = np.linalg.eigh(K)
