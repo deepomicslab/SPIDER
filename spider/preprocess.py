@@ -31,7 +31,7 @@ def cci_spatalk(adata, work_dir, cluster_key, is_human, out_f):
     meta.celltype = meta.celltype.str.replace('-', '_')
     meta.to_csv(meta_f)
     species = 'Human' if is_human else 'Mouse'
-    with resources.path("spider.R_script", "run_spatalk.R") as pw_fn:
+    with resources.path("spider_local.R_script", "run_spatalk.R") as pw_fn:
         os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f {pw_fn} {count_f} {meta_f} {species} {out_f}"'))
     
 # imputation
@@ -61,7 +61,30 @@ def idata_construct(score, pairs_meta, lr_df, lr_raw, adata):
     print(f'Construct idata with {idata.shape[0]} interactions and {idata.shape[1]} LR pairs.')
     return idata
 
-def score(adata, lr_df, pairs):
+def subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite):
+    from os.path import exists
+    if not no_spatalk:
+        out_f = f'{work_dir}/spatalk'
+        if overwrite | (not exists(f'{out_f}_lrpair.csv')):
+            cci_spatalk(adata, work_dir, cluster_key, is_human, out_f)
+        else:
+            print(f'{out_f}_lrpair.csv already exists, skipping spatalk.')
+    try:
+        print('using spatalk result')
+        lr_raw = pd.read_csv(f'{out_f}_lrpair.csv', index_col=0).sort_values('score')
+        lr_raw = lr_raw.drop_duplicates(subset=['ligand', 'receptor'], keep="last")
+    except:
+        print('no spatalk result, using all lrpairs')
+        lr_raw = load_lr_df(is_human).drop_duplicates(subset=['ligand', 'receptor'], keep="last")
+        lr_raw['score'] = 1
+    return lr_raw
+
+
+def score(adata, lr_df, pairs, imputation):
+    if imputation:
+        print('Running imputation with MAGIC')
+        impute_MAGIC(adata)
+    
     exp_ref = adata.to_df()
     exp_ref = exp_ref.loc[:,~exp_ref.columns.duplicated()]
     l = lr_df['ligand'].to_numpy().flatten()
@@ -74,7 +97,7 @@ def score(adata, lr_df, pairs):
     score = lr_df['score'].to_numpy()*np.sqrt(np.maximum(edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):]))
     return score
 
-def subset(adata, lr_df):
+def subset_adata(adata, lr_df):
     genes = adata.var_names.tolist()
     lr_df = lr_df[lr_df['ligand'].isin(genes) & lr_df['receptor'].isin(genes)]
     lr_df.index = lr_df['ligand'] + "_" + lr_df['receptor']

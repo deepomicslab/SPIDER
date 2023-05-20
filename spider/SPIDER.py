@@ -1,5 +1,5 @@
 import pandas as pd
-from os.path import exists
+
 
 from . import svi
 from . import preprocess
@@ -33,28 +33,15 @@ class SPIDER():
         adata = adata_input.copy()
         del adata_input
         # detect cci
-        if not no_spatalk:
-            out_f = f'{work_dir}/spatalk'
-            if overwrite | (not exists(f'{out_f}_lrpair.csv')):
-                preprocess.cci_spatalk(adata, work_dir, cluster_key, is_human, out_f)
-            else:
-                print(f'{out_f}_lrpair.csv already exists, skipping spatalk.')
-        try:
-            lr_raw = pd.read_csv(f'{out_f}_lrpair.csv', index_col=0).sort_values('score')
-            lr_raw = lr_raw.drop_duplicates(subset=['ligand', 'receptor'], keep="last")
-        except:
-            print('no spatalk result, using all lrpairs')
-            lr_raw = preprocess.load_lr_df(is_human).drop_duplicates(subset=['ligand', 'receptor'], keep="last")
-            lr_raw['score'] = 1
-        if imputation:
-            print('Running imputation with MAGIC')
-            preprocess.impute_MAGIC(adata)
 
-        # idata generation
-        lr_df, adata = preprocess.subset(adata, lr_raw)
+        # Step 1
         pairs = preprocess.find_pairs(adata, coord_type, n_neighs)
         pairs_meta = preprocess.meta(adata, cluster_key, pairs)
-        score = preprocess.score(adata, lr_df, pairs)
+        # Step 2
+        lr_raw = preprocess.subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite)
+        lr_df, adata = preprocess.subset_adata(adata, lr_raw)
+        score = preprocess.score(adata, lr_df, pairs, imputation)
+        # Idata object construction
         idata = preprocess.idata_construct(score, pairs_meta, lr_df, lr_raw, adata)
         return idata
 
