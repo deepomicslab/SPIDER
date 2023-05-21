@@ -7,7 +7,7 @@ First, creast a conda enviroment with python=3.9
 ```shell
 conda create -n spider python=3.8
 conda activate spider
-conda install -c conda-forge somoclu, fa2
+conda install -c conda-forge somoclu fa2
 ```
 
 Then use pip to install spider-st:
