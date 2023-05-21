@@ -8,6 +8,7 @@ First, creast a conda enviroment with python=3.8
 conda create -n spider python=3.8
 conda activate spider
 conda install -c conda-forge somoclu fa2
+conda install -c kayarre pygco
 ```
 
 Then use pip to install spider-st:
