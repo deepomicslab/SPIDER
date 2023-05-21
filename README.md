@@ -3,7 +3,14 @@
 SPIDER constructs cell-cell interaction interfaces with minimized Dirichlet energy, models interface profiles with knowledge-graph-informed interaction signals, and identifies spatially variable signals with multiple probabilistic models.
 
 ## Install
-For python version of SPIDER, simply call:
+First, creast a conda enviroment with python=3.9
+```shell
+conda create -n spider python=3.8
+conda activate spider
+conda install -c conda-forge somoclu, fa2
+```
+
+Then use pip to install spider-st:
 ```shell
 pip install spider-st
 ```
@@ -18,6 +25,11 @@ install.packages('devtools')
 devtools::install_github('xzhoulab/SPARK')
 devtools::install_github('linxihui/NNLM')
 devtools::install_github('ZJUFanLab/SpaTalk')
+```
+
+You also need to provide the executive R path in your enviroment, you can normally obtain this by checking the output of
+```shell
+which R
 ```
 
 ## Quick Start
