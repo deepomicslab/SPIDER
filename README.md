@@ -3,7 +3,7 @@
 SPIDER constructs cell-cell interaction interfaces with minimized Dirichlet energy, models interface profiles with knowledge-graph-informed interaction signals, and identifies spatially variable signals with multiple probabilistic models.
 
 ## Install
-First, creast a conda enviroment with python=3.9
+First, creast a conda enviroment with python=3.8
 ```shell
 conda create -n spider python=3.8
 conda activate spider
