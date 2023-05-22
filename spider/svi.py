@@ -42,6 +42,7 @@ def som_mapping(som, idata, df):
 def meta_pattern_to_idata(idata, meta_idata):
     idata.obsm['pattern_score'] = meta_idata.obsm['pattern_score'][idata.obs['som_node'].to_numpy()]  
     idata.var = meta_idata.var
+    print(meta_idata)
     idata.uns['nnSVG'] = meta_idata.uns['nnSVG']
     idata.uns['SOMDE'] = meta_idata.uns['SOMDE']
     idata.uns['SpatialDE'] = meta_idata.uns['SpatialDE']
@@ -51,14 +52,14 @@ def meta_pattern_to_idata(idata, meta_idata):
     idata.uns['gearyC'] = meta_idata.uns['gearyC']
     print(f'Added key pattern_score in idata.obsm')   
 
-def find_svi(idata, out_f, overwrite, som=None):
+def find_svi(idata, out_f, overwrite, R_path, som=None):
     # Method: Identifying spatially variable LR interactions
     # Gaussian models
-    svi_nnSVG(idata,out_f,overwrite)
+    svi_nnSVG(idata,out_f,R_path,overwrite)
     svi_SOMDE(idata,out_f,overwrite, som=som)
     svi_SpatialDE2(idata,out_f,overwrite)
     # Non-parametric covariance test
-    svi_SPARKX(idata,out_f,overwrite)
+    svi_SPARKX(idata,out_f,R_path,overwrite)
     # HMRF
     svi_scGCO(idata,out_f,overwrite)
     # baseline auto-correlation metrics
@@ -105,7 +106,7 @@ def svi_geary(idata, work_dir,overwrite=False):
     except:
         pass
 
-def svi_nnSVG(idata, work_dir, overwrite=False):
+def svi_nnSVG(idata, work_dir, R_path, overwrite=False):
     try:
         count_f = f'{work_dir}idata_count.csv'
         meta_f = f'{work_dir}idata_meta.csv'
@@ -114,14 +115,14 @@ def svi_nnSVG(idata, work_dir, overwrite=False):
             idata.obs[['row', 'col']].to_csv(meta_f)
         if (overwrite) | (not exists( f'{work_dir}nnSVG.csv')):
             t0=time.time()
-            with resources.path("spider.R_script", "run_nnSVG.R") as pw_fn:
-                os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
+            with resources.path("spider_local.R_script", "run_nnSVG.R") as pw_fn:
+                os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
             idata.uns['nnSVG_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}nnSVG.csv', index_col=0)
         idata.uns['nnSVG'] = result
         print(f'Added key nnSVG in idata.uns')
-    except:
-        pass
+    except Exception as e:
+        print(e)
     
 def scGCO_sv(locs, data_norm, cellGraph, gmmDict, smooth_factor=10, unary_scale_factor=100, label_cost=10, algorithm='expansion'):
     from itertools import repeat
@@ -183,7 +184,7 @@ def svi_scGCO(idata, work_dir, overwrite=False):
     except:
         pass
     
-def svi_SPARKX(idata, work_dir, overwrite=False):
+def svi_SPARKX(idata, work_dir, R_path, overwrite=False):
     try:
         count_f = f'{work_dir}idata_count.csv'
         meta_f = f'{work_dir}idata_meta.csv'
@@ -192,8 +193,8 @@ def svi_SPARKX(idata, work_dir, overwrite=False):
             idata.obs[['row', 'col']].to_csv(meta_f)
         if (overwrite) | (not exists( f'{work_dir}SPARKX.csv')):
             t0=time.time()
-            with resources.path("spider.R_script", "run_SPARKX.R") as pw_fn:
-                os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
+            with resources.path("spider_local.R_script", "run_SPARKX.R") as pw_fn:
+                os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
             idata.uns['SPARKX_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}SPARKX.csv', index_col=0)
         idata.uns['SPARKX'] = result
@@ -205,7 +206,8 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False):
     try:
         # if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')) | (not exists(f'{work_dir}SpatialDE_individual.csv')):
         if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')):
-            from spider import SpatialDE as SpatialDE2
+            print('in')
+            from spider_local import SpatialDE as SpatialDE2
             t0=time.time()
             svg_full, individual = SpatialDE2.test(idata, omnibus=False)
             svg_full = pd.concat([svg_full.set_index('gene'), individual.loc[individual.groupby('gene').lengthscale.idxmin()].set_index('gene')], axis=1)
@@ -240,13 +242,13 @@ def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
     except:
         pass
     
-def combine_SVI(idata, threshold):
+def combine_SVI(idata, threshold, svi_number):
     svi_df, svi_df_strict = combine_SVI_strict(idata,threshold=threshold)
-    if len(svi_df_strict) < 10:
-        print('Detected SVI number is less than 10, falling back to relaxed filtering.')
+    if len(svi_df_strict) <= svi_number:
+        print(f'Detected SVI number is less than {svi_number}, falling back to relaxed filtering.')
         svi_df, svi_df_strict = combine_SVI_Fisher(idata,threshold=threshold)
-    if len(svi_df_strict) < 10:
-        print('Detected SVI number is less than 10, falling back to use SOMDE result only.')
+    if len(svi_df_strict) <= svi_number:
+        print(f'Detected SVI number is less than {svi_number}, falling back to use SOMDE result only.')
         svi_df, svi_df_strict  = combine_SVI_somde(idata,threshold=threshold)
     return svi_df, svi_df_strict
 
@@ -341,8 +343,8 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 # SVI pattern generation with Gaussian process mixture model
-def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8):
-    from spider import SpatialDE as SpatialDE2
+def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8, predefined_pattern_number=-1):
+    from spider_local import SpatialDE as SpatialDE2
     allsignifgenes = svi_df_strict.index.to_numpy()
     if 'lengthscale' in idata.uns['SpatialDE'].columns:
         l=idata.uns['SpatialDE'].loc[allsignifgenes]['lengthscale'].to_list()
@@ -351,8 +353,10 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8):
             l=idata.uns['SOMDE'].set_index('g').loc[allsignifgenes]['l'].to_list()
     else:
         l=idata.uns['SOMDE'].set_index('g').loc[allsignifgenes]['l'].to_list()
+
     pattern_number = 1000
-    if len(np.unique(l)) <= 1:
+    print(predefined_pattern_number)
+    if (len(np.unique(l)) <= 1) | (predefined_pattern_number != -1):
         pattern_number = -1
     for count in range(5):
         print(pattern_number, count, pattern_prune_threshold)
@@ -366,18 +370,20 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8):
         elif (pattern_number < 100) and (pattern_number > 2):
             break
         else:
-            print(f'falling back to controlled pattern')
-            histology_results, patterns, prob = SVI_patterns_v1(idata, svi_df_strict)
+            print(f'using controlled pattern')
+            histology_results, patterns, prob = SVI_patterns_v1(idata, svi_df_strict, components=predefined_pattern_number)
             upper_patterns = dotdict({
                 'labels': histology_results['pattern'].to_numpy(),
                 'patterns': patterns.to_numpy(),
                 'pattern_probabilities': prob
             })
             pattern_number = patterns.shape[1]
+            histology_results['pattern'].to_csv('/home/lishiying/data6/01-interaction/results/DFPFC_paper/151673/patttern.csv')
             break
-
     print(f'eventually found {pattern_number} patterns')
     idata.var['label'] = -1
+    if len(upper_patterns.labels) !=  len(allsignifgenes):
+        allsignifgenes = svi_df_strict.index.to_numpy()
     idata.var.loc[allsignifgenes, 'label'] = upper_patterns.labels
     idata.var[[f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = 0
     idata.var.loc[allsignifgenes, [f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = upper_patterns.pattern_probabilities

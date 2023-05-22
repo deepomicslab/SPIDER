@@ -4,8 +4,7 @@ import numpy as np
 
 def supervised_spot_clust(idata, adata, label, portion=0.1, n_cluster=None, n_neighbors=100, min_dist=1):
     import umap
-    idata.uns['cell_meta'][label+'_int'] = idata.uns['cell_meta'][label].astype('category').cat.codes
-    masked_target = idata.uns['cell_meta'][label+'_int']
+    masked_target = idata.uns['cell_meta'][label].astype('category').cat.codes.to_numpy()
     np.random.seed(52)
     masked_target[np.random.choice(len(idata.uns['cell_meta'][label]), size=int(len(idata.uns['cell_meta'][label]) * portion), replace=False)] = -1
     embedding = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist,random_state=52).fit_transform(idata.uns['cell_pattern'], y=masked_target)

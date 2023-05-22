@@ -13,7 +13,7 @@ from importlib import resources
 
 
 # detect cci
-def cci_spatalk(adata, work_dir, cluster_key, is_human, out_f):
+def cci_spatalk(adata, work_dir, cluster_key, is_human, out_f, R_path):
     import os
     count_f = f'{work_dir}/adata_count.csv'
     meta_f = f'{work_dir}/adata_meta.csv'
@@ -31,8 +31,8 @@ def cci_spatalk(adata, work_dir, cluster_key, is_human, out_f):
     meta.celltype = meta.celltype.str.replace('-', '_')
     meta.to_csv(meta_f)
     species = 'Human' if is_human else 'Mouse'
-    with resources.path("spider_local.R_script", "run_spatalk.R") as pw_fn:
-        os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f {pw_fn} {count_f} {meta_f} {species} {out_f}"'))
+    with resources.path("spider.R_script", "run_spatalk.R") as pw_fn:
+        os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {species} {out_f}"'))
     
 # imputation
 def impute_MAGIC(adata):
@@ -58,15 +58,15 @@ def idata_construct(score, pairs_meta, lr_df, lr_raw, adata):
     sc.pp.filter_genes(idata, min_cells=5)
     sc.pp.filter_cells(idata, min_genes=1)
     idata.obsm['spatial'] = idata.obs[['row', 'col']].to_numpy()
-    print(f'Construct idata with {idata.shape[0]} interactions and {idata.shape[1]} LR pairs.')
+    print(f'Construct idata with {idata.shape[0]} interfaces and {idata.shape[1]} LR pairs.')
     return idata
 
-def subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite):
+def subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite, R_path):
     from os.path import exists
     if not no_spatalk:
         out_f = f'{work_dir}/spatalk'
         if overwrite | (not exists(f'{out_f}_lrpair.csv')):
-            cci_spatalk(adata, work_dir, cluster_key, is_human, out_f)
+            cci_spatalk(adata, work_dir, cluster_key, is_human, out_f, R_path)
         else:
             print(f'{out_f}_lrpair.csv already exists, skipping spatalk.')
     try:
@@ -94,8 +94,13 @@ def score(adata, lr_df, pairs, imputation):
     edge_exp_both = np.multiply(sub_exp[pairs[0]], sub_exp_rev[pairs[1]])
     # equation 2 in the manuscript
     print('scoring')
-    score = lr_df['score'].to_numpy()*np.sqrt(np.maximum(edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):]))
+    score = np.sqrt(np.maximum(edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):])) * lr_df['score'].to_numpy()
     return score
+
+def find_interfaces(adata, coord_type, n_neighs, cluster_key):
+        pairs = find_pairs(adata, coord_type=coord_type, n_neighs=n_neighs)
+        pairs_meta = meta(adata, cluster_key, pairs)
+        return pairs, pairs_meta
 
 def subset_adata(adata, lr_df):
     genes = adata.var_names.tolist()
@@ -106,13 +111,13 @@ def subset_adata(adata, lr_df):
     unique_lr = np.unique(np.concatenate((l, r)))
     adata = adata[:, adata.var_names.isin(unique_lr)]
     sc.pp.filter_genes(adata, min_cells=1)
-    sc.pp.filter_cells(adata, min_genes=1)
     sc.pp.normalize_total(adata, target_sum=1e4)
     genes = adata.var_names.tolist()
     lr_df = lr_df[lr_df['ligand'].isin(genes) & lr_df['receptor'].isin(genes)]
     return lr_df, adata
 
-def find_pairs(adata, coord_type='grid', n_neighs=6):
+
+def find_pairs(adata, coord_type='generic', n_neighs=6):
     from squidpy.gr import spatial_neighbors
     from scipy.sparse import triu
     if coord_type == 'grid':

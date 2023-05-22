@@ -8,6 +8,7 @@ from . import enrichment
 from . import visualization
 from . import util
 from . import trajectory
+from . import reconstruction
 
 class SPIDER():
     def __init__(self):
@@ -18,15 +19,16 @@ class SPIDER():
         self.vis = visualization
         self.util = util
         self.traj = trajectory
+        self.recon = reconstruction
         pass
 
     def prep(self,
-            adata_input, work_dir, 
+            adata_input, work_dir, R_path,
             no_spatalk=False,
             cluster_key='type', 
             is_human=True, 
             n_neighs=6, 
-            coord_type='grid', 
+            coord_type='generic', 
             imputation=True,
             overwrite=False,
     ):
@@ -35,32 +37,31 @@ class SPIDER():
         # detect cci
 
         # Step 1
-        pairs = preprocess.find_pairs(adata, coord_type, n_neighs)
-        pairs_meta = preprocess.meta(adata, cluster_key, pairs)
+        interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, coord_type=coord_type, n_neighs=n_neighs, cluster_key=cluster_key)
         # Step 2
-        lr_raw = preprocess.subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite)
+        lr_raw = preprocess.subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite, R_path)
         lr_df, adata = preprocess.subset_adata(adata, lr_raw)
-        score = preprocess.score(adata, lr_df, pairs, imputation)
+        score = preprocess.score(adata, lr_df, interface_cell_pair, imputation)
         # Idata object construction
-        idata = preprocess.idata_construct(score, pairs_meta, lr_df, lr_raw, adata)
+        idata = preprocess.idata_construct(score, interface_meta, lr_df, lr_raw, adata)
         return idata
 
-    def find_svi(self, idata, out_f, abstract=True, overwrite=False, n_neighbors=10, threshold=0.01, pattern_prune_threshold=0.0001):
+    def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=10, threshold=0.01, pattern_prune_threshold=0.0001, predefined_pattern_number=-1, svi_number=10):
         from os.path import exists
         from os import mkdir
         if not exists(out_f):
             print(f'Creating folder {out_f}')
             mkdir(out_f)
-        if len(idata) < 200:
-            print('number of interface is less than 200, skipping abstraction')
+        if len(idata) < 700:
+            print('number of interface is less than 700, skipping abstraction')
             abstract=False
         if abstract:
             som, idata, meta_idata = svi.abstract(idata, n_neighbors)
-            svi.find_svi(meta_idata,out_f,overwrite, som=som) #generating results
+            svi.find_svi(meta_idata,out_f, overwrite, R_path, som=som) #generating results
             print('finished running all SVI tests')
-            svi_df, svi_df_strict = svi.combine_SVI(meta_idata,threshold=threshold)
+            svi_df, svi_df_strict = svi.combine_SVI(meta_idata,threshold=threshold, svi_number=svi_number)
             if (overwrite) | (not exists(f'{out_f}pattern.csv')):
-                svi.SVI_patterns(meta_idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold)
+                svi.SVI_patterns(meta_idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold, predefined_pattern_number=predefined_pattern_number)
                 pd.DataFrame(meta_idata.obsm['pattern_score']).to_csv(f'{out_f}pattern.csv')
                 meta_idata.var.to_csv(f'{out_f}membership.csv')
             else:
@@ -69,19 +70,20 @@ class SPIDER():
             svi.meta_pattern_to_idata(idata, meta_idata)
             pd.DataFrame(meta_idata.obsm['pattern_score']).to_csv(f'{out_f}full_pattern.csv')
         else:
-            svi.find_svi(idata, out_f,overwrite) #generating results
-            svi_df, svi_df_strict = svi.combine_SVI(idata,threshold=threshold)
+            svi.find_svi(idata, out_f, R_path, overwrite) #generating results
+            svi_df, svi_df_strict = svi.combine_SVI(idata,threshold=threshold, svi_number=svi_number)
             if (overwrite) | (not exists(f'{out_f}pattern.csv')):
-                svi.SVI_patterns(idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold)
+                svi.SVI_patterns(idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold, predefined_pattern_number=predefined_pattern_number)
                 pd.DataFrame(idata.obsm['pattern_score']).to_csv(f'{out_f}pattern.csv')
                 idata.var.to_csv(f'{out_f}membership.csv')
             else:
                 idata.obsm['pattern_score'] = pd.read_csv(f'{out_f}pattern.csv', index_col=0)
                 idata.var = pd.read_csv(f'{out_f}membership.csv', index_col=0)   
+            meta_idata = None
         idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = 0
         corr_df=pd.concat([idata[:,idata.var['is_svi']==1].to_df(),pd.DataFrame(idata.obsm['pattern_score'],index=idata.obs_names)],axis=1).corr().loc[idata[:,idata.var['is_svi']==1].var_names, range(idata.obsm['pattern_score'].shape[1])]
         idata.var.loc[idata[:,idata.var['is_svi']==1].var_names, [f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = corr_df.to_numpy()
-        return idata, None
+        return idata, meta_idata
         
     def cell_transform(self, idata, adata, label=None):
         from scanpy.tools import rank_genes_groups

@@ -46,4 +46,21 @@ def interaction_spot_interface(idata):
     idata.uns['cell_score'] = df
     print(f'Added key cell_score in idata.uns')
 
-            
+def adata_moranI(adata, out_f, n_jobs=10):
+    import scanpy as sc
+    import squidpy as sq
+    adata_copy = adata.copy()
+    sc.pp.normalize_total(adata_copy, target_sum=1e4)
+    sc.pp.log1p(adata_copy)
+    sc.pp.highly_variable_genes(adata_copy, flavor='seurat_v3', n_top_genes=5000)
+    genes = adata_copy[:, adata_copy.var.highly_variable].var_names.values[:5000]
+
+    sq.gr.spatial_neighbors(adata, key_added='spatial')
+    sq.gr.spatial_autocorr(
+        adata,
+        genes=genes,
+        mode="moran",
+        n_perms=1000,
+        n_jobs=n_jobs,
+    )
+    adata.uns['moranI'].to_csv(f'{out_f}svg_moranI.csv')
