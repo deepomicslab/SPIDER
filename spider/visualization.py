@@ -303,22 +303,35 @@ def draw_diff(adata, idata, title, is_human=True,top=200):
     plt.title('Moran I')
     
     plt.subplot(1, 3, 2)
-    g=venn3(subsets = [set(gene_list_lri),set(genelist_lr),set(genelist)], #
-        set_labels = ('SVI genes', "LR genes",'SVG'), #
-        set_colors=("#098154","#069af3","#c72e29"),#
-        alpha=0.6,#
-        normalize_to=1.0,#
+    g=venn3(subsets = [set(gene_list_lri),set(genelist_lr),set(genelist)], #绘图数据集
+        set_labels = ('SVI genes', "LR genes",'SVG'), #设置组名
+        set_colors=("#098154","#069af3","#c72e29"),#设置圈的颜色，中间颜色不能修改
+        alpha=0.6,#透明度
+        normalize_to=1.0,#venn图占据figure的比例，1.0为占满
        )
     plt.title('Gene Overlap')
     plt.subplot(1, 3, 3)
-    g=venn3(subsets = [set(lri_pw_list),set(gene_lr_list),set(gene_pw_list)], #
-        set_labels = ('SVI genes', "LR genes",'SVG'), #
-        set_colors=("#098154","#069af3","#c72e29"),#
-        alpha=0.6,#
-        normalize_to=1.0,#
+    g=venn3(subsets = [set(lri_pw_list),set(gene_lr_list),set(gene_pw_list)], #绘图数据集
+        set_labels = ('SVI genes', "LR genes",'SVG'), #设置组名
+        set_colors=("#098154","#069af3","#c72e29"),#设置圈的颜色，中间颜色不能修改
+        alpha=0.6,#透明度
+        normalize_to=1.0,#venn图占据figure的比例，1.0为占满
        )
     plt.title('Enriched Pathway Overlap')
     
     merged_df = pd.concat(pathway_dfs)
 
     return merged_df,lri_pw_list,gene_lr_list,gene_pw_list
+
+def traj_proj(idata, label, save=''):
+    import scvelo as scv
+    if save == '':
+        scv.pl.velocity_embedding_stream(
+            idata, color=label, vkey="T_fwd_spatial", basis="spatial", legend_loc="right",
+            recompute=False,V=idata.obsm['T_fwd_spatial'],smooth=1.5
+        )
+    else:
+        scv.pl.velocity_embedding_stream(
+            idata, color=label, vkey="T_fwd_spatial", basis="spatial", legend_loc="right",
+            recompute=False,V=idata.obsm['T_fwd_spatial'],smooth=1.5,save=save,dpi=300
+        )

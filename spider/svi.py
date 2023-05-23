@@ -42,14 +42,14 @@ def som_mapping(som, idata, df):
 def meta_pattern_to_idata(idata, meta_idata):
     idata.obsm['pattern_score'] = meta_idata.obsm['pattern_score'][idata.obs['som_node'].to_numpy()]  
     idata.var = meta_idata.var
-    print(meta_idata)
-    idata.uns['nnSVG'] = meta_idata.uns['nnSVG']
-    idata.uns['SOMDE'] = meta_idata.uns['SOMDE']
-    idata.uns['SpatialDE'] = meta_idata.uns['SpatialDE']
-    idata.uns['SPARKX'] = meta_idata.uns['SPARKX']
-    idata.uns['scGCO'] = meta_idata.uns['scGCO']
-    idata.uns['moranI'] = meta_idata.uns['moranI']
-    idata.uns['gearyC'] = meta_idata.uns['gearyC']
+    for i in np.array(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(meta_idata.uns.keys()))]:
+        idata.uns[i] = meta_idata.uns[i]
+        # idata.uns['SOMDE'] = meta_idata.uns['SOMDE']
+        # idata.uns['SpatialDE'] = meta_idata.uns['SpatialDE']
+        # idata.uns['SPARKX'] = meta_idata.uns['SPARKX']
+        # idata.uns['scGCO'] = meta_idata.uns['scGCO']
+        # idata.uns['moranI'] = meta_idata.uns['moranI']
+        # idata.uns['gearyC'] = meta_idata.uns['gearyC']
     print(f'Added key pattern_score in idata.obsm')   
 
 def find_svi(idata, out_f, overwrite, R_path, som=None):
@@ -232,7 +232,12 @@ def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
                 X=corinfo[['row','col']].values.astype(np.float32)
                 som = SomNode(X,10)
                 ndf,ninfo = som.mtx(df)
-            nres = som.norm()
+            # nres = som.norm()
+            from scipy import optimize
+            from somde import regress_out
+            phi_hat, _ = optimize.curve_fit(lambda mu, phi: mu + phi * mu ** 2, som.ndf.mean(1), som.ndf.var(1))
+            dfm = np.log(som.ndf + 1. / (2 * np.abs(phi_hat[0])))
+            som.nres = regress_out(som.ninfo, dfm, 'np.log(total_count)').T
             result, SVnum =som.run()
             result.to_csv(f'{work_dir}SOMDE.csv')
             idata.uns['SOMDE_time'] = time.time()-t0
@@ -242,7 +247,31 @@ def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
     except:
         pass
     
-def combine_SVI(idata, threshold, svi_number):
+# def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
+#     try:
+#         if (overwrite) | (not exists(f'{work_dir}SOMDE.csv')):
+#             t0=time.time()
+#             if som is None:
+#                 from somde import SomNode
+#                 df = idata.to_df().T
+#                 corinfo = idata.obs
+#                 corinfo["total_count"]=df.sum(0)
+#                 X=corinfo[['row','col']].values.astype(np.float32)
+#                 som = SomNode(X,10)
+#                 ndf,ninfo = som.mtx(df)
+#             nres = som.norm()
+#             result, SVnum =som.run()
+#             result.to_csv(f'{work_dir}SOMDE.csv')
+#             idata.uns['SOMDE_time'] = time.time()-t0
+#         result = pd.read_csv(f'{work_dir}SOMDE.csv', index_col=0)
+#         idata.uns['SOMDE'] = result
+#         print(f'Added key SOMDE in idata.uns')
+#     except:
+#         pass
+    
+    
+    
+def combine_SVI(idata, threshold, svi_number=10):
     svi_df, svi_df_strict = combine_SVI_strict(idata,threshold=threshold)
     if len(svi_df_strict) <= svi_number:
         print(f'Detected SVI number is less than {svi_number}, falling back to relaxed filtering.')
@@ -315,15 +344,33 @@ def combine_SVI_somde(idata, threshold=0.01):
     
 def eva_SVI(idata, svi_df_strict):
     import seaborn as sns
-    dfs = [
-        -idata.uns['gearyC'][['C']],
-        idata.uns['moranI'][['I']],
-        idata.uns['SOMDE'].set_index('g')['FSV'],
-        idata.uns['nnSVG']['LR_stat'],
-        idata.uns['SOMDE'].set_index('g')['LLR'],
-    ]
+    methods = np.array(['SOMDE', 'nnSVG', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'nnSVG', 'gearyC', 'moranI'],list(idata.uns.keys()))]
+    dfs = []
+    metrics = []
+    for i in methods:
+        if i == 'gearyC':
+            dfs.append(-idata.uns['gearyC'][['C']])
+            metrics.append("Geary C (rev.)")
+        elif i == 'moranI':
+            dfs.append(idata.uns['moranI'][['I']]),
+            metrics.append("Moran I")
+        elif i == 'SOMDE':
+            dfs.append(idata.uns['SOMDE'].set_index('g')['FSV']),
+            metrics.append("FSV") 
+            dfs.append(idata.uns['SOMDE'].set_index('g')['LLR']),
+            metrics.append("LLR (SOMDE") 
+        elif i == 'nnSVG':
+            dfs.append(idata.uns['nnSVG']['LR_stat']),
+            metrics.append("LR_stat") 
+    # dfs = [
+    #     -idata.uns['gearyC'][['C']],
+    #     idata.uns['moranI'][['I']],
+    #     idata.uns['SOMDE'].set_index('g')['FSV'],
+    #     idata.uns['nnSVG']['LR_stat'],
+    #     idata.uns['SOMDE'].set_index('g')['LLR'],
+    # ]
     df = pd.concat(dfs, axis=1)
-    metrics = ["Geary C (rev.)", "Moran I", 'FSV', 'LR (nnSVG)', 'LLR (SOMDE)',]
+    # metrics = ["Geary C (rev.)", "Moran I", 'FSV', 'LR (nnSVG)', 'LLR (SOMDE)',]
     df.columns=metrics
 
     normalized_df=(df-df.min())/(df.max()-df.min())
@@ -400,12 +447,16 @@ def SVI_patterns_v1(idata, svi_df_strict, components=5):
     corinfo = idata.obs
     corinfo["total_counts"]=df.sum(0)
     X=corinfo[['row','col']].values.astype(np.float32)
-    norm_expr = NaiveDE.stabilize(df).T
-    resid_expr = NaiveDE.regress_out(corinfo, norm_expr.T, 'np.log(total_counts)').T
+    # norm_expr = NaiveDE.stabilize(df).T
+    from scipy import optimize
+    phi_hat, _ = optimize.curve_fit(lambda mu, phi: mu + phi * mu ** 2, df.mean(1), df.var(1))
+    dfm = np.log(df + 1. / (2 * np.abs(phi_hat[0])))
+    nres = NaiveDE.regress_out(corinfo, dfm, 'np.log(total_count)').T
+    # resid_expr = NaiveDE.regress_out(corinfo, norm_expr.T, 'np.log(total_counts)').T
     print('finished regression')
-    results = SpatialDE.run(X,resid_expr)
+    results = SpatialDE.run(X,nres) # for generating lengthscale
+    histology_results, patterns, prob = spatial_patterns(X, nres, results, C=components,l=results['l'].median()+0.5, verbosity=1)
     print('finished fitting')
-    histology_results, patterns, prob = spatial_patterns(X, resid_expr, results, C=components,l=results['l'].median()+0.5, verbosity=1)
     return histology_results, patterns, prob
     
 def idata_pattern_to_spot(idata):
@@ -430,6 +481,7 @@ def pattern_label_corr(data, pattern_df, label_key):
     corr = pd.concat([pattern_df, label_df.T], axis=1).corr().loc[label_df.index,  pattern_df.columns]
     return mi, corr
 
+# code created by SpatialDE
 def spatial_patterns(X, exp_mat, DE_mll_results, C, l, **kwargs):
     ''' Group spatially variable genes into spatial patterns using
     automatic expression histology (AEH).

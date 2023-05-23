@@ -34,13 +34,12 @@ class SPIDER():
     ):
         adata = adata_input.copy()
         del adata_input
-        # detect cci
-
-        # Step 1
-        interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, coord_type=coord_type, n_neighs=n_neighs, cluster_key=cluster_key)
-        # Step 2
+        # Prep: find lr pairs and subset adata to have only lr genes
         lr_raw = preprocess.subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite, R_path)
         lr_df, adata = preprocess.subset_adata(adata, lr_raw)
+        # Step: construct interface
+        interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, coord_type=coord_type, n_neighs=n_neighs, cluster_key=cluster_key)
+        # Step: compute interface profile
         score = preprocess.score(adata, lr_df, interface_cell_pair, imputation)
         # Idata object construction
         idata = preprocess.idata_construct(score, interface_meta, lr_df, lr_raw, adata)
@@ -70,7 +69,7 @@ class SPIDER():
             svi.meta_pattern_to_idata(idata, meta_idata)
             pd.DataFrame(meta_idata.obsm['pattern_score']).to_csv(f'{out_f}full_pattern.csv')
         else:
-            svi.find_svi(idata, out_f, R_path, overwrite) #generating results
+            svi.find_svi(idata, out_f, overwrite, R_path) #generating results
             svi_df, svi_df_strict = svi.combine_SVI(idata,threshold=threshold, svi_number=svi_number)
             if (overwrite) | (not exists(f'{out_f}pattern.csv')):
                 svi.SVI_patterns(idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold, predefined_pattern_number=predefined_pattern_number)

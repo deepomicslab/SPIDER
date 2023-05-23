@@ -240,7 +240,6 @@ def enrichment_interacrtion_gene_df(idata, lri_df, groupby='label',is_human=True
     return merged_df, arr
 
 
-
 def add_diff(idata, list1, list2, key_to_add):
     from sklearn.preprocessing import MinMaxScaler
     scaler = MinMaxScaler()
