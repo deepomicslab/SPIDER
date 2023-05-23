@@ -19,7 +19,7 @@ pip install scgco
 
 If you have problem installing the pygco package required by scgco, try clone the pygco repo, in which you need to change the name in setup.py gco-wrapper to pygco, and install pygco with setup.py
 ```shell
-https://github.com/Borda/pyGCO.git
+git clone https://github.com/Borda/pyGCO.git
 cd pyGCO
 <!-- change name in setup.py gco-wrapper to pygco -->
 pip install -r requirements.txt
