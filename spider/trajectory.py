@@ -13,7 +13,7 @@ def smooth_pattern(idata):
     for i in neighbor_idx:
         smoothed_pattern_score.append(np.sum(idata.obsm['pattern_score'][i], axis=0))
     smoothed_pattern_score = np.array(smoothed_pattern_score)
-    idata.obsm['smooth_pattern_score'] = idata.obsm['smooth_pattern_score']
+    idata.obsm['smooth_pattern_score'] = smoothed_pattern_score
 
 def paga(idata, label, n_neighbors=30, min_dist=1):
     import umap
@@ -22,8 +22,8 @@ def paga(idata, label, n_neighbors=30, min_dist=1):
     sc.pp.neighbors(idata, n_neighbors=20, use_rep='X_umap')
     sc.tl.paga(idata, groups=label)
     
-def pseudotime(idata, root_label):
-    idata.uns['iroot'] = np.flatnonzero(idata.obs['label']  == root_label)[0]
+def pseudotime(idata, root_label, root_id=0):
+    idata.uns['iroot'] = np.flatnonzero(idata.obs['label']  == root_label)[root_id]
     sc.tl.dpt(idata)
     
 def projection(idata):
@@ -35,7 +35,7 @@ def projection(idata):
     pt.compute_transition_matrix()
     ck = cr.kernels.ConnectivityKernel(idata,conn_key='spatial_connectivities')
     ck.compute_transition_matrix()
-    k=8*pt+2*ck
+    k=9*pt+1*ck
     k.compute_transition_matrix()
     k.compute_projection(basis="spatial")
     

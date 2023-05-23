@@ -82,11 +82,7 @@ def subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite, R_p
     return lr_raw
 
 
-def score(adata, lr_df, pairs, imputation):
-    if imputation:
-        print('Running imputation with MAGIC')
-        impute_MAGIC(adata)
-    
+def score(adata, lr_df, pairs):
     exp_ref = adata.to_df()
     exp_ref = exp_ref.loc[:,~exp_ref.columns.duplicated()]
     l = lr_df['ligand'].to_numpy().flatten()
@@ -108,7 +104,11 @@ def find_interfaces(adata, coord_type, n_neighs, cluster_key):
         pairs_meta = meta(adata, cluster_key, pairs)
         return pairs, pairs_meta
 
-def subset_adata(adata, lr_df):
+def subset_adata(adata, lr_df, imputation):
+    if imputation:
+        print('Running imputation with MAGIC')
+        impute_MAGIC(adata)
+    
     genes = adata.var_names.tolist()
     lr_df = lr_df[lr_df['ligand'].isin(genes) & lr_df['receptor'].isin(genes)]
     lr_df.index = lr_df['ligand'] + "_" + lr_df['receptor']

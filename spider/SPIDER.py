@@ -36,11 +36,11 @@ class SPIDER():
         del adata_input
         # Prep: find lr pairs and subset adata to have only lr genes
         lr_raw = preprocess.subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite, R_path)
-        lr_df, adata = preprocess.subset_adata(adata, lr_raw)
+        lr_df, adata = preprocess.subset_adata(adata, lr_raw, imputation)
         # Step: construct interface
         interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, coord_type=coord_type, n_neighs=n_neighs, cluster_key=cluster_key)
         # Step: compute interface profile
-        score = preprocess.score(adata, lr_df, interface_cell_pair, imputation)
+        score = preprocess.score(adata, lr_df, interface_cell_pair)
         # Idata object construction
         idata = preprocess.idata_construct(score, interface_meta, lr_df, lr_raw, adata)
         return idata

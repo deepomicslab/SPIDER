@@ -271,7 +271,7 @@ def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
     
     
     
-def combine_SVI(idata, threshold, svi_number=10):
+def combine_SVI(idata, threshold, svi_number):
     svi_df, svi_df_strict = combine_SVI_strict(idata,threshold=threshold)
     if len(svi_df_strict) <= svi_number:
         print(f'Detected SVI number is less than {svi_number}, falling back to relaxed filtering.')
@@ -418,9 +418,6 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8, 
             break
         else:
             print(f'using controlled pattern')
-            if predefined_pattern_number == -1:
-                predefined_pattern_number = 5
-        
             histology_results, patterns, prob = SVI_patterns_v1(idata, svi_df_strict, components=predefined_pattern_number)
             upper_patterns = dotdict({
                 'labels': histology_results['pattern'].to_numpy(),
@@ -450,17 +447,12 @@ def SVI_patterns_v1(idata, svi_df_strict, components=5):
     corinfo = idata.obs
     corinfo["total_counts"]=df.sum(0)
     X=corinfo[['row','col']].values.astype(np.float32)
-    # norm_expr = NaiveDE.stabilize(df).T
-    from scipy import optimize
-    phi_hat, _ = optimize.curve_fit(lambda mu, phi: mu + phi * mu ** 2, df.mean(1), df.var(1))
-    dfm = np.log(df + 1. / (2 * np.abs(phi_hat[0])))
-    nres = NaiveDE.regress_out(corinfo, dfm, 'np.log(total_count)').T
-    # resid_expr = NaiveDE.regress_out(corinfo, norm_expr.T, 'np.log(total_counts)').T
+    norm_expr = NaiveDE.stabilize(df).T
+    resid_expr = NaiveDE.regress_out(corinfo, norm_expr.T, 'np.log(total_counts)').T
     print('finished regression')
-    results = SpatialDE.run(X,nres) # for generating lengthscale
-    print('finished lengthscale')
-    histology_results, patterns, prob = spatial_patterns(X, nres, results, C=components,l=results['l'].median()+0.5, verbosity=1)
+    results = SpatialDE.run(X,resid_expr)
     print('finished fitting')
+    histology_results, patterns, prob = spatial_patterns(X, resid_expr, results, C=components,l=results['l'].median()+0.5, verbosity=1)
     return histology_results, patterns, prob
     
 def idata_pattern_to_spot(idata):
