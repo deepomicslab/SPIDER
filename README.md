@@ -17,11 +17,11 @@ SKLEARN_ALLOW_DEPRECATED_SKLEARN_PACKAGE_INSTALL=TRUE \
 pip install scgco
 ```
 
-If you have problem installing the pygco package required by scgco, try clone the pygco repo, in which you need to change the name in setup.py gco-wrapper to pygco, and install pygco with setup.py
+If you have problem installing the pygco package required by scgco, try clone the pygco repo, in which you need to change the name in the setup function in setup.py from gco-wrapper to pygco, and install pygco with setup.py
 ```shell
 git clone https://github.com/Borda/pyGCO.git
 cd pyGCO
-<!-- change name in setup.py gco-wrapper to pygco -->
+<!-- change name in setup.py from gco-wrapper to pygco -->
 pip install -r requirements.txt
 python setup.py install
 ```
