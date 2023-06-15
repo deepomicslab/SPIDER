@@ -70,7 +70,7 @@ op.vis.pattern_LRI(idata,show_SVI=10)
 
 Outputs:
 
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/human_pdac_st_patterns.png)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_patterns.png)
 
 ```python
 # combine SVI with p-value threshold
@@ -84,7 +84,7 @@ Outputs:
 
 ![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_metric.png)
 
-```python
+<!-- ```python
 # transform SVI pattern from interfaces to spots
 op.svi.idata_pattern_to_spot(idata)
 
@@ -94,7 +94,10 @@ op.cl.unsupervised_spot_clust(idata, adata, n_cluster=7)
 
 Outputs:
 
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_boundary.png)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_boundary.png) -->
 
+Check the correlations between SVIs and deconvoluted celltypes:
+
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/st_decon_SVI.png)
 
 
