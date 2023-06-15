@@ -196,7 +196,7 @@ def svi_SPARKX(idata, work_dir, R_path, overwrite=False):
 def svi_SpatialDE2(idata, work_dir, overwrite=False):
     try:
         if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')):
-            from spider import SpatialDE as SpatialDE2
+            from spider import SpatialDE2
             t0=time.time()
             svg_full, individual = SpatialDE2.test(idata, omnibus=False)
             svg_full = pd.concat([svg_full.set_index('gene'), individual.loc[individual.groupby('gene').lengthscale.idxmin()].set_index('gene')], axis=1)
@@ -212,7 +212,7 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False):
 def svi_SpatialDE2_omnibus(idata, work_dir, overwrite=False):
     try:
         if (overwrite) | (not exists(f'{work_dir}SpatialDE_omnibus.csv')):
-            from spider import SpatialDE as SpatialDE2
+            from spider import SpatialDE2
             t0=time.time()
             svg_full, _ = SpatialDE2.test(idata, omnibus=True)
             svg_full = svg_full.set_index('gene')
@@ -391,7 +391,7 @@ class dotdict(dict):
 
 # SVI pattern generation with Gaussian process mixture model
 def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-6, predefined_pattern_number=-1):
-    from spider import SpatialDE as SpatialDE2
+    from spider import SpatialDE2
     allsignifgenes = svi_df_strict.index.to_numpy()
 
     if predefined_pattern_number == -1:
@@ -418,7 +418,7 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-6, 
     idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = corr_df.to_numpy()
     
 def SVI_patterns_v2(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8, predefined_pattern_number=-1):
-    from spider import SpatialDE as SpatialDE2
+    from spider import SpatialDE2
     allsignifgenes = svi_df_strict.index.to_numpy()
     if 'lengthscale' in idata.uns['SpatialDE'].columns:
         l=idata.uns['SpatialDE'].loc[allsignifgenes]['lengthscale'].to_list()
