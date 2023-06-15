@@ -25,6 +25,6 @@ spe <- filter_genes(spe)
 spe <- computeLibraryFactors(spe)
 spe <- logNormCounts(spe)
 
-spe <- nnSVG(spe, n_threads = 10)
+spe <- nnSVG(spe, n_threads = 1)
 
 write.csv(rowData(spe), paste0(out_f,"nnSVG.csv"), row.names = TRUE)

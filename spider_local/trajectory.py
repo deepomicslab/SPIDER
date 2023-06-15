@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import squidpy as sq
 
-def smooth_pattern(idata):
+def smooth_pattern(idata, n_neighbors=10):
     import sklearn
     neigh = sklearn.neighbors.NearestNeighbors(n_neighbors=10)
     neigh.fit(idata.obs[['row', 'col']])
@@ -21,6 +21,21 @@ def paga(idata, label, n_neighbors=30, min_dist=1):
     idata.obsm['X_umap'] = embedding
     sc.pp.neighbors(idata, n_neighbors=20, use_rep='X_umap')
     sc.tl.paga(idata, groups=label)
+    
+
+def paga_default(idata, label):
+    import umap
+    embedding = umap.UMAP(random_state=52, n_components=3).fit_transform(idata.obsm['smooth_pattern_score'])
+    idata.obsm['X_umap'] = embedding
+    sc.pp.neighbors(idata, use_rep='X_umap')
+    sc.tl.paga(idata, groups=label)
+    
+def paga_spot(idata, adata, label, n_neighbors=30, min_dist=1):
+    import umap
+    embedding = umap.UMAP(random_state=42, min_dist=0.8, n_neighbors=20).fit_transform(idata.uns['cell_pattern'])
+    adata.obsm['X_umap'] = embedding
+    sc.pp.neighbors(adata, n_neighbors=20, use_rep='X_umap')   
+    sc.tl.paga(adata, groups=label)
     
 def pseudotime(idata, root_label, root_id=0):
     idata.uns['iroot'] = np.flatnonzero(idata.obs['label']  == root_label)[root_id]

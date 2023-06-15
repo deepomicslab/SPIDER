@@ -12,7 +12,7 @@ import anndata
 from importlib import resources
 
 
-# detect cci
+# screen
 def cci_spatalk(adata, work_dir, cluster_key, is_human, out_f, R_path):
     import os
     count_f = f'{work_dir}/adata_count.csv'
@@ -31,9 +31,8 @@ def cci_spatalk(adata, work_dir, cluster_key, is_human, out_f, R_path):
     meta.celltype = meta.celltype.str.replace('-', '_')
     meta.to_csv(meta_f)
     species = 'Human' if is_human else 'Mouse'
-    with resources.path("spider_local.R_script", "run_spatalk.R") as pw_fn:
+    with resources.path("spider.R_script", "run_spatalk.R") as pw_fn:
         os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {species} {out_f}"'))
-        # os.system(str(f'/bin/bash -c "source /etc/profile;module load GCC/11.2.0 OpenMPI/4.1.1 R/4.2.0 Anaconda3/2022.05 R-bundle-Bioconductor/3.15-R-4.2.0;R -f {pw_fn} {count_f} {meta_f} {species} {out_f}"'))
     
 # imputation
 def impute_MAGIC(adata):
@@ -92,11 +91,8 @@ def score(adata, lr_df, pairs):
     edge_exp_both = np.multiply(sub_exp[pairs[0]], sub_exp_rev[pairs[1]])
     # equation 2 in the manuscript
     print('scoring')
-    # score = (edge_exp_both[:, :int(len(l))] + edge_exp_both[:, int(len(l)):])/2
-    # score = np.maximum(edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):])
     print('using sqrt+max')
     score = np.sqrt(np.maximum(edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):]))
-    # score = np.sqrt(np.maximum(edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):])) * lr_df['score'].to_numpy()
     return score
 
 def find_interfaces(adata, coord_type, n_neighs, cluster_key):
@@ -132,14 +128,6 @@ def find_pairs(adata, coord_type='generic', n_neighs=6):
     else:
         spatial_neighbors(adata, coord_type=coord_type, delaunay=True, n_neighs=n_neighs)
     return np.transpose(triu(adata.obsp['spatial_connectivities']).nonzero()).T
-        # print('non grid coordinate')
-        # spatial_neighbors(adata, coord_type=coord_type, delaunay=True, n_neighs=n_neighs)
-        # potential_pairs = np.transpose(triu(adata.obsp['spatial_connectivities']).nonzero()).T
-        # print('distance cutoff')
-        # d = np.linalg.norm(adata.obsm['spatial'][potential_pairs[0]]-adata.obsm['spatial'][potential_pairs[1]], axis=1)
-        # d = (d - d.mean()) / d.std()**2
-        # potential_pairs = potential_pairs[:, d <= d.std()]
-        # return potential_pairs
 
 def meta(adata, cluster_key, pairs):
     # get label
@@ -153,7 +141,7 @@ def meta(adata, cluster_key, pairs):
         node_labels_text = adata.obs[cluster_key].to_numpy()
         pairs_meta['A_label'] = node_labels_text[pairs[0]].astype(str)
         pairs_meta['B_label'] = node_labels_text[pairs[1]].astype(str)
-        node_labels = adata.obs[cluster_key].astype('category').cat.codes.to_numpy()
+        node_labels = adata.obs[cluster_key].astype('category').cat.codes.to_numpy() + 1
         pairs_meta['A_label_int'] = node_labels[pairs[0]]
         pairs_meta['B_label_int'] = node_labels[pairs[1]]
         pairs_meta['label_1'] = pairs_meta["A_label_int"].astype(str) + pairs_meta["B_label_int"].astype(str)
@@ -171,7 +159,6 @@ def meta(adata, cluster_key, pairs):
     # get position  
     A_pos = pairs_meta[['A_row', 'A_col']].to_numpy(dtype=float)
     B_pos = pairs_meta[['B_row', 'B_col']].to_numpy(dtype=float)
-    # optimal solution for Equation 1 in the manuscript
     avg_pair_pos = (A_pos + B_pos) / 2
     pairs_meta[['row', 'col']] = avg_pair_pos
     pairs_meta['dist'] = np.linalg.norm(A_pos-B_pos, axis=1)

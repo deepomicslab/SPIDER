@@ -64,3 +64,12 @@ def adata_moranI(adata, out_f, n_jobs=10):
         n_jobs=n_jobs,
     )
     adata.uns['moranI'].to_csv(f'{out_f}svg_moranI.csv')
+    
+def get_marker_df(idata, logfoldchanges_threhold=1):
+    marker_df = pd.concat([pd.DataFrame(idata.uns['rank_genes_groups']['pvals_adj']).melt(),
+           pd.DataFrame(idata.uns['rank_genes_groups']['logfoldchanges']).melt()['value'],
+           pd.DataFrame(idata.uns['rank_genes_groups']['names']).melt()['value']], axis=1)
+    marker_df.columns = ['cluster', 'pvals_adj', 'logfoldchanges', 'names']
+    marker_df  = marker_df[(marker_df.pvals_adj < 0.05) & (marker_df.logfoldchanges > logfoldchanges_threhold)]
+    print(marker_df.cluster.value_counts())
+    return marker_df

@@ -27,7 +27,7 @@ class SPIDER():
             no_spatalk=False,
             cluster_key='type', 
             is_human=True, 
-            n_neighs=6, 
+            n_neighs=5, 
             coord_type='generic', 
             imputation=True,
             overwrite=False,
@@ -45,17 +45,17 @@ class SPIDER():
         idata = preprocess.idata_construct(score, interface_meta, lr_df, lr_raw, adata)
         return idata
 
-    def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=10, threshold=0.01, pattern_prune_threshold=0.0001, predefined_pattern_number=-1, svi_number=10):
+    def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=5, alpha=0.3, threshold=0.01, pattern_prune_threshold=1e-6, predefined_pattern_number=-1, svi_number=10):
         from os.path import exists
         from os import mkdir
         if not exists(out_f):
             print(f'Creating folder {out_f}')
             mkdir(out_f)
-        if len(idata) < 700:
-            print('number of interface is less than 700, skipping abstraction')
+        if len(idata) < 1000:
+            print('number of interface is less than 1000, skipping abstraction')
             abstract=False
         if abstract:
-            som, idata, meta_idata = svi.abstract(idata, n_neighbors)
+            som, idata, meta_idata = svi.abstract(idata, n_neighbors, alpha)
             svi.find_svi(meta_idata,out_f, overwrite, R_path, som=som) #generating results
             print('finished running all SVI tests')
             svi_df, svi_df_strict = svi.combine_SVI(meta_idata,threshold=threshold, svi_number=svi_number)
@@ -76,7 +76,7 @@ class SPIDER():
                 pd.DataFrame(idata.obsm['pattern_score']).to_csv(f'{out_f}pattern.csv')
                 idata.var.to_csv(f'{out_f}membership.csv')
             else:
-                idata.obsm['pattern_score'] = pd.read_csv(f'{out_f}pattern.csv', index_col=0)
+                idata.obsm['pattern_score'] = pd.read_csv(f'{out_f}pattern.csv', index_col=0).to_numpy()
                 idata.var = pd.read_csv(f'{out_f}membership.csv', index_col=0)   
             meta_idata = None
         idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = 0

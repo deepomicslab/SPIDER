@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 import time
 from importlib import resources
 
-def abstract(idata, n_neighbors=10):
+def abstract(idata, n_neighbors=10, alpha=0.3):
     # Method: Building abstract interfaces with self-organizing map
     from somde import SomNode
     df = idata.to_df().T
@@ -18,7 +18,7 @@ def abstract(idata, n_neighbors=10):
     corinfo["total_count"]=df.sum(0)
     X=corinfo[['row','col']].values.astype(np.float32)
     som = SomNode(X,n_neighbors)
-    ndf,ninfo = som.mtx(df)
+    ndf,ninfo = som.mtx(df, alpha=alpha)
     meta_idata = anndata.AnnData(ndf.T)
     meta_idata.obs[['row', 'col', 'total_count']] = ninfo.to_numpy(dtype=float)
     meta_idata.obsm['spatial'] = meta_idata.obs[['row', 'col']].to_numpy()
@@ -44,12 +44,6 @@ def meta_pattern_to_idata(idata, meta_idata):
     idata.var = meta_idata.var
     for i in np.array(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(meta_idata.uns.keys()))]:
         idata.uns[i] = meta_idata.uns[i]
-        # idata.uns['SOMDE'] = meta_idata.uns['SOMDE']
-        # idata.uns['SpatialDE'] = meta_idata.uns['SpatialDE']
-        # idata.uns['SPARKX'] = meta_idata.uns['SPARKX']
-        # idata.uns['scGCO'] = meta_idata.uns['scGCO']
-        # idata.uns['moranI'] = meta_idata.uns['moranI']
-        # idata.uns['gearyC'] = meta_idata.uns['gearyC']
     print(f'Added key pattern_score in idata.obsm')   
 
 def find_svi(idata, out_f, overwrite, R_path, som=None):
@@ -57,7 +51,8 @@ def find_svi(idata, out_f, overwrite, R_path, som=None):
     # Gaussian models
     svi_nnSVG(idata,out_f,R_path,overwrite)
     svi_SOMDE(idata,out_f,overwrite, som=som)
-    svi_SpatialDE2(idata,out_f,overwrite)
+    svi_SpatialDE2_omnibus(idata,out_f,overwrite)
+    # svi_SpatialDE2(idata,out_f,overwrite)
     # Non-parametric covariance test
     svi_SPARKX(idata,out_f,R_path,overwrite)
     # HMRF
@@ -115,7 +110,7 @@ def svi_nnSVG(idata, work_dir, R_path, overwrite=False):
             idata.obs[['row', 'col']].to_csv(meta_f)
         if (overwrite) | (not exists( f'{work_dir}nnSVG.csv')):
             t0=time.time()
-            with resources.path("spider_local.R_script", "run_nnSVG.R") as pw_fn:
+            with resources.path("spider.R_script", "run_nnSVG.R") as pw_fn:
                 os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
             idata.uns['nnSVG_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}nnSVG.csv', index_col=0)
@@ -139,10 +134,6 @@ def scGCO_sv(locs, data_norm, cellGraph, gmmDict, smooth_factor=10, unary_scale_
     p_values=reduce(operator.add, ppp)
     ggg = [results[i][2] for i in np.arange(len(results))]
     genes = reduce(operator.add, ggg)
-    # exp_ppp = [results[i][3] for i in np.arange(len(results))]
-    # exp_pvalues = reduce(operator.add, exp_ppp)  
-    # exp_ddd = [results[i][4] for i in np.arange(len(results))]
-    # exp_diffs = reduce(operator.add, exp_ddd)      
     fff = [results[i][3] for i in np.arange(len(results))]
     s_factors = reduce(operator.add, fff)
     lll = [results[i][4] for i in np.arange(len(results))]
@@ -179,7 +170,7 @@ def svi_scGCO(idata, work_dir, overwrite=False):
             scGCO.write_result_to_csv(result_df, f'{work_dir}scGCO.csv')
             idata.uns['scGCO_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}scGCO.csv')
-        idata.uns['scGCO'] = result
+        idata.uns['scGCO'] = result[result.columns[:6]]
         print(f'Added key scGCO in idata.uns')
     except:
         pass
@@ -193,7 +184,7 @@ def svi_SPARKX(idata, work_dir, R_path, overwrite=False):
             idata.obs[['row', 'col']].to_csv(meta_f)
         if (overwrite) | (not exists( f'{work_dir}SPARKX.csv')):
             t0=time.time()
-            with resources.path("spider_local.R_script", "run_SPARKX.R") as pw_fn:
+            with resources.path("spider.R_script", "run_SPARKX.R") as pw_fn:
                 os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
             idata.uns['SPARKX_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}SPARKX.csv', index_col=0)
@@ -204,10 +195,8 @@ def svi_SPARKX(idata, work_dir, R_path, overwrite=False):
     
 def svi_SpatialDE2(idata, work_dir, overwrite=False):
     try:
-        # if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')) | (not exists(f'{work_dir}SpatialDE_individual.csv')):
         if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')):
-            print('in')
-            from spider_local import SpatialDE as SpatialDE2
+            from spider import SpatialDE as SpatialDE2
             t0=time.time()
             svg_full, individual = SpatialDE2.test(idata, omnibus=False)
             svg_full = pd.concat([svg_full.set_index('gene'), individual.loc[individual.groupby('gene').lengthscale.idxmin()].set_index('gene')], axis=1)
@@ -220,6 +209,22 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False):
     except:
         pass 
     
+def svi_SpatialDE2_omnibus(idata, work_dir, overwrite=False):
+    try:
+        if (overwrite) | (not exists(f'{work_dir}SpatialDE_omnibus.csv')):
+            from spider import SpatialDE as SpatialDE2
+            t0=time.time()
+            svg_full, _ = SpatialDE2.test(idata, omnibus=True)
+            svg_full = svg_full.set_index('gene')
+            svg_full.to_csv(f'{work_dir}SpatialDE_omnibus.csv')
+            idata.uns['SpatialDE2_time'] = time.time()-t0
+        result = pd.read_csv(f'{work_dir}SpatialDE_omnibus.csv', index_col=0)
+        idata.uns['SpatialDE'] = result
+        print(f'Added key SpatialDE in idata.uns')
+    except Exception as e:
+        print(e)
+        pass 
+
 def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
     try:
         if (overwrite) | (not exists(f'{work_dir}SOMDE.csv')):
@@ -247,31 +252,7 @@ def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
     except:
         pass
     
-# def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
-#     try:
-#         if (overwrite) | (not exists(f'{work_dir}SOMDE.csv')):
-#             t0=time.time()
-#             if som is None:
-#                 from somde import SomNode
-#                 df = idata.to_df().T
-#                 corinfo = idata.obs
-#                 corinfo["total_count"]=df.sum(0)
-#                 X=corinfo[['row','col']].values.astype(np.float32)
-#                 som = SomNode(X,10)
-#                 ndf,ninfo = som.mtx(df)
-#             nres = som.norm()
-#             result, SVnum =som.run()
-#             result.to_csv(f'{work_dir}SOMDE.csv')
-#             idata.uns['SOMDE_time'] = time.time()-t0
-#         result = pd.read_csv(f'{work_dir}SOMDE.csv', index_col=0)
-#         idata.uns['SOMDE'] = result
-#         print(f'Added key SOMDE in idata.uns')
-#     except:
-#         pass
-    
-    
-    
-def combine_SVI(idata, threshold, svi_number):
+def combine_SVI(idata, threshold, svi_number=10):
     svi_df, svi_df_strict = combine_SVI_strict(idata,threshold=threshold)
     if len(svi_df_strict) <= svi_number:
         print(f'Detected SVI number is less than {svi_number}, falling back to relaxed filtering.')
@@ -287,10 +268,9 @@ def combine_SVI_Fisher(idata, threshold=0.05):
     df = []
     for i in methods:
         if i == 'SOMDE':
-            df.append(idata.uns[i].set_index('g')[['pval']].rename(columns = {'pval': i}))
+            df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
         elif i == 'SpatialDE':
             df.append(idata.uns[i][['padj']].rename(columns = {'padj': i}))
-            # df.append(idata.uns[i].set_index('gene')[['padj']].rename(columns = {'padj': i}))
         elif i == 'SPARKX':
             df.append(idata.uns[i][['adjustedPval']].rename(columns = {'adjustedPval': i}))
         elif i == 'nnSVG':
@@ -302,7 +282,6 @@ def combine_SVI_Fisher(idata, threshold=0.05):
     arr = [combine_pvalues(x, method='fisher')[1] for x in df.to_numpy()]
     df['adj_pvalue'] = arr
     df_sub = df[df['adj_pvalue']<threshold]
-    # df_sub = df_sub.loc[np.intersect1d(df_sub.index, idata.uns['SOMDE']['g'])]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
     idata.uns['svi'] = df
     idata.var['is_svi'] = 0
@@ -315,7 +294,7 @@ def combine_SVI_strict(idata, threshold=0.01):
     df = []
     for i in methods:
         if i == 'SOMDE':
-            df.append(idata.uns[i].set_index('g')[['pval']].rename(columns = {'pval': i}))
+            df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
         elif i == 'SpatialDE':
             df.append(idata.uns[i][['padj']].rename(columns = {'padj': i}))
         elif i == 'SPARKX':
@@ -329,12 +308,13 @@ def combine_SVI_strict(idata, threshold=0.01):
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
     idata.uns['svi'] = df
     idata.var['is_svi'] = 0
+    df_sub = df_sub.loc[np.intersect1d(df_sub.index, idata.var_names)]
     idata.var.loc[df_sub.index, 'is_svi'] = 1
     return df, df_sub
 
 def combine_SVI_somde(idata, threshold=0.01):
     print(f'Using the SOMDE results')
-    df = idata.uns['SOMDE'].set_index('g')[['pval']].rename(columns = {'pval': 'SOMDE'}).fillna(1)
+    df = idata.uns['SOMDE'].set_index('g')[['qval']].rename(columns = {'qval': 'SOMDE'}).fillna(1)
     df_sub = df[(df<threshold).all(axis=1)]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
     idata.uns['svi'] = df
@@ -344,44 +324,64 @@ def combine_SVI_somde(idata, threshold=0.01):
     
 def eva_SVI(idata, svi_df_strict):
     import seaborn as sns
-    methods = np.array(['SOMDE', 'nnSVG', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'nnSVG', 'gearyC', 'moranI'],list(idata.uns.keys()))]
+    from statannotations.Annotator import Annotator
+    methods = np.array(['moranI', 'gearyC', 'SOMDE', 'nnSVG'])[np.isin(['SOMDE', 'nnSVG', 'gearyC', 'moranI'],list(idata.uns.keys()))]
+    print(f'evaluating with {methods}')
     dfs = []
     metrics = []
     for i in methods:
         if i == 'gearyC':
             dfs.append(-idata.uns['gearyC'][['C']])
-            metrics.append("Geary C (rev.)")
+            metrics.append("Geary\nC (rev.)")
         elif i == 'moranI':
             dfs.append(idata.uns['moranI'][['I']]),
-            metrics.append("Moran I")
+            metrics.append("Moran\nI")
         elif i == 'SOMDE':
             dfs.append(idata.uns['SOMDE'].set_index('g')['FSV']),
-            metrics.append("FSV") 
+            metrics.append("FSV\n(SOMDE)") 
             dfs.append(idata.uns['SOMDE'].set_index('g')['LLR']),
-            metrics.append("LLR (SOMDE") 
+            metrics.append("LR\n(SOMDE)") 
         elif i == 'nnSVG':
             dfs.append(idata.uns['nnSVG']['LR_stat']),
-            metrics.append("LR_stat") 
-    # dfs = [
-    #     -idata.uns['gearyC'][['C']],
-    #     idata.uns['moranI'][['I']],
-    #     idata.uns['SOMDE'].set_index('g')['FSV'],
-    #     idata.uns['nnSVG']['LR_stat'],
-    #     idata.uns['SOMDE'].set_index('g')['LLR'],
-    # ]
+            metrics.append("LR\n(nnSVG)") 
+    pairs = []
+    for i in metrics:
+        pairs.append( ((i, 'SVI'), (i, 'Excluded')) )
     df = pd.concat(dfs, axis=1)
-    # metrics = ["Geary C (rev.)", "Moran I", 'FSV', 'LR (nnSVG)', 'LLR (SOMDE)',]
     df.columns=metrics
 
     normalized_df=(df-df.min())/(df.max()-df.min())
     normalized_df['Category'] = 'Excluded'
     normalized_df.loc[svi_df_strict.index, 'Category'] = 'SVI'
     normalized_df = normalized_df.melt(id_vars='Category', value_vars=metrics, var_name='Metric')
-
-    ax =sns.boxplot(normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3','Excluded': '#fb8072'}, width=0.8, hue_order=['SVI', 'Excluded'])
+    ax =sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3','Excluded': '#fb8072'}, width=0.8, hue_order=['SVI', 'Excluded'])
     ax.legend(loc='upper center',ncol=2, bbox_to_anchor=(0.5, 1.1), frameon=False)
+    annot = Annotator(ax, pairs, data=normalized_df, x='Metric',y='value', hue='Category', hue_order=['SVI', 'Excluded'])
+    annot.configure(test='Mann-Whitney',comparisons_correction="BH")
+    annot.apply_and_annotate()
     ax.set_ylabel('')    
     ax.set_xlabel('')
+    
+def eva_pattern(idata):
+    import seaborn as sns
+    from statannotations.Annotator import Annotator
+    
+    dfs = []
+    pairs = []
+    for i in range(idata.obsm['pattern_score'].shape[1]):
+        subdf = idata.var[[f'pattern_membership_{i}', f'pattern_correlation_{i}']]
+        subdf.columns = ['membership', 'correlation']
+        subdf['pattern'] = i
+        dfs.append(subdf)
+        pairs.append(((i, 'yes'), (i, 'no')))
+    maindf = pd.concat(dfs)
+    maindf['membership'] = maindf['membership'].replace(0, 'no').replace(1, 'yes')
+    ax=sns.boxplot(data=maindf, x='pattern', y='correlation', hue='membership', hue_order=['yes', 'no'],
+                   palette={'yes':'#80b1d3','no': '#fb8072'}, width=0.8)
+    ax.legend(loc='upper center',ncol=2, bbox_to_anchor=(0.5, 1.1), frameon=False)
+    annot = Annotator(ax, pairs, data=maindf, x='pattern',y='correlation', hue='membership')
+    annot.configure(test='Mann-Whitney',comparisons_correction="BH")
+    annot.apply_and_annotate()
     
 class dotdict(dict):
     """dot.notation access to dictionary attributes"""
@@ -390,8 +390,35 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 # SVI pattern generation with Gaussian process mixture model
-def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8, predefined_pattern_number=-1):
-    from spider_local import SpatialDE as SpatialDE2
+def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-6, predefined_pattern_number=-1):
+    from spider import SpatialDE as SpatialDE2
+    allsignifgenes = svi_df_strict.index.to_numpy()
+
+    if predefined_pattern_number == -1:
+        param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold)
+    else:
+        param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold, nclasses=predefined_pattern_number)
+    upper_patterns, _ = SpatialDE2.spatial_patterns(idata, normalized=True, genes=allsignifgenes, rng=np.random.default_rng(seed=45), params=param_obj, copy=False)
+    if (predefined_pattern_number == -1) & ((upper_patterns.patterns.shape[1] > 20) | (upper_patterns.patterns.shape[1] < 5)) :
+        param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold, nclasses=20)
+        upper_patterns, _ = SpatialDE2.spatial_patterns(idata, normalized=True, genes=allsignifgenes, rng=np.random.default_rng(seed=45), params=param_obj, copy=False)
+    if (upper_patterns.patterns.shape[1] < 3) :
+        param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold, nclasses=5)
+        upper_patterns, _ = SpatialDE2.spatial_patterns(idata, normalized=True, genes=allsignifgenes, rng=np.random.default_rng(seed=45), params=param_obj, copy=False)
+    print(f'eventually found {upper_patterns.patterns.shape[1]} patterns')
+    idata.var['label'] = -1
+    if len(upper_patterns.labels) !=  len(allsignifgenes):
+        allsignifgenes = svi_df_strict.index.to_numpy()
+    idata.var.loc[allsignifgenes, 'label'] = upper_patterns.labels
+    idata.var[[f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = 0
+    idata.var.loc[allsignifgenes, [f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = upper_patterns.pattern_probabilities
+    idata.obsm['pattern_score'] = upper_patterns.patterns
+    idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = 0
+    corr_df=pd.concat([idata.to_df(),pd.DataFrame(idata.obsm['pattern_score'],index=idata.obs_names)],axis=1).corr().loc[idata.var_names, range(idata.obsm['pattern_score'].shape[1])]
+    idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = corr_df.to_numpy()
+    
+def SVI_patterns_v2(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8, predefined_pattern_number=-1):
+    from spider import SpatialDE as SpatialDE2
     allsignifgenes = svi_df_strict.index.to_numpy()
     if 'lengthscale' in idata.uns['SpatialDE'].columns:
         l=idata.uns['SpatialDE'].loc[allsignifgenes]['lengthscale'].to_list()
@@ -418,6 +445,9 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-8, 
             break
         else:
             print(f'using controlled pattern')
+            if predefined_pattern_number == -1:
+                predefined_pattern_number = 5
+        
             histology_results, patterns, prob = SVI_patterns_v1(idata, svi_df_strict, components=predefined_pattern_number)
             upper_patterns = dotdict({
                 'labels': histology_results['pattern'].to_numpy(),
@@ -447,12 +477,17 @@ def SVI_patterns_v1(idata, svi_df_strict, components=5):
     corinfo = idata.obs
     corinfo["total_counts"]=df.sum(0)
     X=corinfo[['row','col']].values.astype(np.float32)
-    norm_expr = NaiveDE.stabilize(df).T
-    resid_expr = NaiveDE.regress_out(corinfo, norm_expr.T, 'np.log(total_counts)').T
+    # norm_expr = NaiveDE.stabilize(df).T
+    from scipy import optimize
+    phi_hat, _ = optimize.curve_fit(lambda mu, phi: mu + phi * mu ** 2, df.mean(1), df.var(1))
+    dfm = np.log(df + 1. / (2 * np.abs(phi_hat[0])))
+    nres = NaiveDE.regress_out(corinfo, dfm, 'np.log(total_count)').T
+    # resid_expr = NaiveDE.regress_out(corinfo, norm_expr.T, 'np.log(total_counts)').T
     print('finished regression')
-    results = SpatialDE.run(X,resid_expr)
+    results = SpatialDE.run(X,nres) # for generating lengthscale
+    print('finished lengthscale')
+    histology_results, patterns, prob = spatial_patterns(X, nres, results, C=components,l=results['l'].median()+0.5, verbosity=1)
     print('finished fitting')
-    histology_results, patterns, prob = spatial_patterns(X, resid_expr, results, C=components,l=results['l'].median()+0.5, verbosity=1)
     return histology_results, patterns, prob
     
 def idata_pattern_to_spot(idata):

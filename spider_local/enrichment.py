@@ -130,7 +130,7 @@ def pattern_enrichment_node(idata, is_human=True, groupby='label', subset=[], or
     return merged_df, arr
     
     
-def enrichment(custom, background, histology_results, groupby='pattern', cutoff=0.01, top=None, order=[], group=[]):
+def enrichment(custom, background, histology_results, groupby='pattern', cutoff=0.05, top=None, order=[], group=[]):
     import gseapy
     dfs=[]
     histology_results = histology_results[histology_results.g.isin(np.intersect1d(histology_results.g, background))]
@@ -202,7 +202,7 @@ def enrichment_interacrtion_gene_list(idata, lri_list, is_human=True,custom_path
                     gene_sets=pathway_db)
     return enr_res.results
 
-def enrichment_interacrtion_gene_df(idata, lri_df, groupby='label',is_human=True,custom_pathwaydb=[], order=[]):
+def enrichment_interacrtion_gene_df(lri_df, groupby='label',is_human=True,custom_pathwaydb=[], order=[]):
     import gseapy
     arr = []
     for i in lri_df.sort_values(groupby)[groupby].unique():
