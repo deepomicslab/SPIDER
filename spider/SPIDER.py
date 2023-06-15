@@ -8,7 +8,6 @@ from . import enrichment
 from . import visualization
 from . import util
 from . import trajectory
-from . import reconstruction
 
 class SPIDER():
     def __init__(self):
@@ -19,7 +18,6 @@ class SPIDER():
         self.vis = visualization
         self.util = util
         self.traj = trajectory
-        self.recon = reconstruction
         pass
 
     def prep(self,
