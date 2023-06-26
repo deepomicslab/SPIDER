@@ -5,11 +5,10 @@ from .preprocess import load_lr_df
 
 def load_pathway(is_human=True):
     from importlib import resources
-    with resources.path("spider.lrdb", "pathways.tsv") as pw_fn:
+    with resources.path("spider.lrdb", "pathway.tsv") as pw_fn:
         pw = pd.read_csv(pw_fn, sep='\t', index_col=0)
     species = 'Human' if is_human else 'Mouse'
-    pw = pw[pw.species==species].drop_duplicates()
-    pw.index = pw.src + '_' + pw.dest
+    pw = pw[pw.species==species]
     return pw
     
 def pathway_annotation(idata, is_human=True):
@@ -32,7 +31,6 @@ def pathway_prep(idata, is_human=True):
     lr_raw = load_lr_df(is_human=is_human)
     lr_raw.index = lr_raw.ligand + '_' + lr_raw.receptor
     pw = load_pathway(is_human)
-    pw.index = pw.src + '_' + pw.dest
     pw = pw.loc[np.intersect1d(lr_raw.index, pw.index)]
     custom = {}
     for ptw in pw.pathway.unique():

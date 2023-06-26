@@ -1,5 +1,6 @@
 library('SPARK')
 args = commandArgs()
+set.seed(20230617)
 
 if (length(args)==0) {
   stop("not enough input", call.=FALSE)

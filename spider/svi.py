@@ -198,6 +198,7 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False):
         if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')):
             from spider import SpatialDE2
             t0=time.time()
+            np.random.seed(20230617)
             svg_full, individual = SpatialDE2.test(idata, omnibus=False)
             svg_full = pd.concat([svg_full.set_index('gene'), individual.loc[individual.groupby('gene').lengthscale.idxmin()].set_index('gene')], axis=1)
             svg_full.to_csv(f'{work_dir}SpatialDE.csv')
@@ -344,24 +345,33 @@ def eva_SVI(idata, svi_df_strict):
         elif i == 'nnSVG':
             dfs.append(idata.uns['nnSVG']['LR_stat']),
             metrics.append("LR\n(nnSVG)") 
-    pairs = []
-    for i in metrics:
-        pairs.append( ((i, 'SVI'), (i, 'Excluded')) )
+
     df = pd.concat(dfs, axis=1)
     df.columns=metrics
 
     normalized_df=(df-df.min())/(df.max()-df.min())
+    normalized_df = normalized_df.fillna(0)
     normalized_df['Category'] = 'Excluded'
     normalized_df.loc[svi_df_strict.index, 'Category'] = 'SVI'
     normalized_df = normalized_df.melt(id_vars='Category', value_vars=metrics, var_name='Metric')
-    ax =sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3','Excluded': '#fb8072'}, width=0.8, hue_order=['SVI', 'Excluded'])
+    normalized_df = normalized_df.sort_values('Category')
+    if normalized_df['Category'].nunique()!=1:
+        ax =sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3','Excluded': '#fb8072'}, width=0.8, hue_order=['SVI', 'Excluded'])
+        pairs = []
+        for i in metrics:
+            pairs.append( ((i, 'SVI'), (i, 'Excluded')))
+        annot = Annotator(ax, pairs, data=normalized_df, x='Metric',y='value', hue='Category', hue_order=['SVI', 'Excluded'])
+        annot.configure(test='Mann-Whitney-gt',comparisons_correction="BH", correction_format="replace")
+        annot.apply_test()
+        annot.annotate()
+    else:
+        ax =sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3'}, width=0.8, hue_order=['SVI'])
+        
     ax.legend(loc='upper center',ncol=2, bbox_to_anchor=(0.5, 1.1), frameon=False)
-    annot = Annotator(ax, pairs, data=normalized_df, x='Metric',y='value', hue='Category', hue_order=['SVI', 'Excluded'])
-    annot.configure(test='Mann-Whitney',comparisons_correction="BH")
-    annot.apply_and_annotate()
+
     ax.set_ylabel('')    
     ax.set_xlabel('')
-    
+        
 def eva_pattern(idata):
     import seaborn as sns
     from statannotations.Annotator import Annotator
@@ -373,15 +383,17 @@ def eva_pattern(idata):
         subdf.columns = ['membership', 'correlation']
         subdf['pattern'] = i
         dfs.append(subdf)
-        pairs.append(((i, 'yes'), (i, 'no')))
+        pairs.append(((i, 'member'), (i, 'non-member')))
     maindf = pd.concat(dfs)
-    maindf['membership'] = maindf['membership'].replace(0, 'no').replace(1, 'yes')
-    ax=sns.boxplot(data=maindf, x='pattern', y='correlation', hue='membership', hue_order=['yes', 'no'],
-                   palette={'yes':'#80b1d3','no': '#fb8072'}, width=0.8)
+    maindf = maindf.sort_values('membership')
+    maindf['membership'] = maindf['membership'].replace(0, 'non-member').replace(1, 'member')
+    ax=sns.boxplot(data=maindf, x='pattern', y='correlation', hue='membership', hue_order=['member', 'non-member'],
+                   palette={'member':'#80b1d3','non-member': '#fb8072'}, width=0.8)
     ax.legend(loc='upper center',ncol=2, bbox_to_anchor=(0.5, 1.1), frameon=False)
     annot = Annotator(ax, pairs, data=maindf, x='pattern',y='correlation', hue='membership')
-    annot.configure(test='Mann-Whitney',comparisons_correction="BH")
-    annot.apply_and_annotate()
+    annot.configure(test='Mann-Whitney-ls',comparisons_correction="BH", correction_format="replace")
+    annot.apply_test()
+    annot.annotate()
     
 class dotdict(dict):
     """dot.notation access to dictionary attributes"""

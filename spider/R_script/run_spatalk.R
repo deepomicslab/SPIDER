@@ -2,6 +2,7 @@ library(SpaTalk)
 # running SpaTalk 
 # Shao, X., et al. Knowledge-graph-based cell-cell communication inference for spatially resolved transcriptomic data with SpaTalk. Nat Commun 13, 4429 (2022). https://doi.org/10.1038/s41467-022-32111-8
 # Configurations used on SPIDER are described in Supplementary Methods > Screening ligand-receptor pairs based on the activation of downstream markers
+set.seed(20230617)
 
 args = commandArgs()
 

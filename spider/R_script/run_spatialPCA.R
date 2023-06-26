@@ -1,5 +1,5 @@
 library(SpatialPCA)
-
+set.seed(20230617)
 args = commandArgs()
 
 if (length(args)==0) {
