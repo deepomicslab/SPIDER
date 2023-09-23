@@ -73,3 +73,20 @@ def get_marker_df(idata, logfoldchanges_threhold=1):
     marker_df  = marker_df[(marker_df.pvals_adj < 0.05) & (marker_df.logfoldchanges > logfoldchanges_threhold)]
     print(marker_df.cluster.value_counts())
     return marker_df
+
+def save_runningtime(idata, save=''):
+    obj = {}
+    obj['nnSVG_time'] = idata.uns['nnSVG_time']
+    obj['SOMDE_time'] = idata.uns['SOMDE_time']
+    obj['SpatialDE_time'] = idata.uns['SpatialDE_time']
+    obj['SPARKX_time'] = idata.uns['SPARKX_time']
+    obj['scGCO_time'] = idata.uns['scGCO_time']
+    obj['moranI_time'] = idata.uns['moranI_time']
+    obj['gearyC_time'] = idata.uns['gearyC_time']
+    obj['interface'] = idata.shape[0]
+    obj['LRI'] = idata.shape[1]
+    if save != '':
+        import json
+        with open(save, 'w') as f:
+            json.dump(obj, f)
+    return obj

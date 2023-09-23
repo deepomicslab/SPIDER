@@ -38,12 +38,12 @@ class SPIDER():
         # Step: construct interface
         interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, coord_type=coord_type, n_neighs=n_neighs, cluster_key=cluster_key)
         # Step: compute interface profile
-        score = preprocess.score(adata, lr_df, interface_cell_pair)
+        score, direction = preprocess.score(adata, lr_df, interface_cell_pair, interface_meta)
         # Idata object construction
-        idata = preprocess.idata_construct(score, interface_meta, lr_df, lr_raw, adata)
+        idata = preprocess.idata_construct(score, direction, interface_meta, lr_df, lr_raw, adata)
         return idata
 
-    def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=5, alpha=0.3, threshold=0.01, pattern_prune_threshold=1e-6, predefined_pattern_number=-1, svi_number=10):
+    def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=5, alpha=0.3, threshold=0.01, pattern_prune_threshold=1e-6, predefined_pattern_number=-1, svi_number=10, n_jobs=10):
         from os.path import exists
         from os import mkdir
         if not exists(out_f):
@@ -54,7 +54,7 @@ class SPIDER():
             abstract=False
         if abstract:
             som, idata, meta_idata = svi.abstract(idata, n_neighbors, alpha)
-            svi.find_svi(meta_idata,out_f, overwrite, R_path, som=som) #generating results
+            svi.find_svi(meta_idata,out_f, overwrite, R_path, som=som, n_jobs=n_jobs) #generating results
             print('finished running all SVI tests')
             svi_df, svi_df_strict = svi.combine_SVI(meta_idata,threshold=threshold, svi_number=svi_number)
             if (overwrite) | (not exists(f'{out_f}pattern.csv')):
@@ -67,7 +67,7 @@ class SPIDER():
             svi.meta_pattern_to_idata(idata, meta_idata)
             pd.DataFrame(meta_idata.obsm['pattern_score']).to_csv(f'{out_f}full_pattern.csv')
         else:
-            svi.find_svi(idata, out_f, overwrite, R_path) #generating results
+            svi.find_svi(idata, out_f, overwrite, R_path, n_jobs=n_jobs) #generating results
             svi_df, svi_df_strict = svi.combine_SVI(idata,threshold=threshold, svi_number=svi_number)
             if (overwrite) | (not exists(f'{out_f}pattern.csv')):
                 svi.SVI_patterns(idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold, predefined_pattern_number=predefined_pattern_number)

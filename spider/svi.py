@@ -44,24 +44,25 @@ def meta_pattern_to_idata(idata, meta_idata):
     idata.var = meta_idata.var
     for i in np.array(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(meta_idata.uns.keys()))]:
         idata.uns[i] = meta_idata.uns[i]
-    print(f'Added key pattern_score in idata.obsm')   
+        idata.uns[i+"_time"] = meta_idata.uns[i+"_time"]
+    print(f'Added key pattern_score in idata.obsm and method results and running time in uns')   
 
-def find_svi(idata, out_f, overwrite, R_path, som=None):
+def find_svi(idata, out_f, overwrite, R_path, som=None, n_jobs=10):
     # Method: Identifying spatially variable LR interactions
     # Gaussian models
-    svi_nnSVG(idata,out_f,R_path,overwrite)
-    svi_SOMDE(idata,out_f,overwrite, som=som)
-    svi_SpatialDE2_omnibus(idata,out_f,overwrite)
+    svi_nnSVG(idata,out_f,R_path,overwrite, n_jobs=n_jobs)
+    svi_SOMDE(idata,out_f,overwrite, som=som, n_jobs=n_jobs)
+    svi_SpatialDE2_omnibus(idata,out_f,overwrite, n_jobs=n_jobs)
     # svi_SpatialDE2(idata,out_f,overwrite)
     # Non-parametric covariance test
-    svi_SPARKX(idata,out_f,R_path,overwrite)
+    svi_SPARKX(idata,out_f,R_path,overwrite, n_jobs=n_jobs)
     # HMRF
-    svi_scGCO(idata,out_f,overwrite)
+    svi_scGCO(idata,out_f,overwrite, n_jobs=n_jobs)
     # baseline auto-correlation metrics
-    svi_moran(idata,out_f,overwrite)
-    svi_geary(idata,out_f,overwrite)
+    svi_moran(idata,out_f,overwrite, n_jobs=n_jobs)
+    svi_geary(idata,out_f,overwrite, n_jobs=n_jobs)
 
-def svi_moran(idata, work_dir, overwrite=False):
+def svi_moran(idata, work_dir, overwrite=False, n_jobs=10):
     try:
         t0=time.time()
         n_perms=1000
@@ -71,7 +72,7 @@ def svi_moran(idata, work_dir, overwrite=False):
                 idata,
                 mode="moran",
                 n_perms=n_perms,
-                n_jobs=10,
+                n_jobs=n_jobs,
             )
             idata.uns['moranI_time'] = time.time()-t0
             idata.uns['moranI'].to_csv(f'{work_dir}moranI.csv')
@@ -81,7 +82,7 @@ def svi_moran(idata, work_dir, overwrite=False):
     except:
         pass
 
-def svi_geary(idata, work_dir,overwrite=False):
+def svi_geary(idata, work_dir,overwrite=False, n_jobs=10):
     try:
         t0=time.time()
         n_perms=1000
@@ -91,7 +92,7 @@ def svi_geary(idata, work_dir,overwrite=False):
                 idata,
                 mode="geary",
                 n_perms=n_perms,
-                n_jobs=10,
+                n_jobs=n_jobs,
             )
             idata.uns['gearyC_time'] = time.time()-t0
             idata.uns['gearyC'].to_csv(f'{work_dir}gearyC.csv')
@@ -101,7 +102,7 @@ def svi_geary(idata, work_dir,overwrite=False):
     except:
         pass
 
-def svi_nnSVG(idata, work_dir, R_path, overwrite=False):
+def svi_nnSVG(idata, work_dir, R_path, overwrite=False, n_jobs=10):
     try:
         count_f = f'{work_dir}idata_count.csv'
         meta_f = f'{work_dir}idata_meta.csv'
@@ -111,7 +112,7 @@ def svi_nnSVG(idata, work_dir, R_path, overwrite=False):
         if (overwrite) | (not exists( f'{work_dir}nnSVG.csv')):
             t0=time.time()
             with resources.path("spider.R_script", "run_nnSVG.R") as pw_fn:
-                os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
+                os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir} {n_jobs}"'))
             idata.uns['nnSVG_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}nnSVG.csv', index_col=0)
         idata.uns['nnSVG'] = result
@@ -126,7 +127,7 @@ def scGCO_sv(locs, data_norm, cellGraph, gmmDict, smooth_factor=10, unary_scale_
     import statsmodels.stats.multitest as multi
     import scGCO
 
-    results = [scGCO.compute_single_fixed_sf(locs, data_norm, cellGraph, gmmDict, w=None, n=None, smooth_factor=10, unary_scale_factor=100, label_cost=10, algorithm='expansion')]
+    results = [scGCO.compute_single_fixed_sf(locs, data_norm, cellGraph, gmmDict, w=None, n=None, smooth_factor=smooth_factor, unary_scale_factor=unary_scale_factor, label_cost=label_cost, algorithm=algorithm)]
     
     nnn = [results[i][0] for i in np.arange(len(results))]
     nodes = reduce(operator.add, nnn)
@@ -155,12 +156,43 @@ def scGCO_sv(locs, data_norm, cellGraph, gmmDict, smooth_factor=10, unary_scale_
     result_df = pd.DataFrame(t_array[:,1:], index=t_array[:,0], columns=c_labels)
     return result_df
 
-def svi_scGCO(idata, work_dir, overwrite=False):
+def scGCO_log1p(data):
+    '''
+    log transform normalized count data
+    
+    :param file: data (m, n); 
+    :rtype: data (m, n);
+    '''
+    from scipy.sparse import issparse
+    if not issparse(data):
+        return np.log1p(data)
+    else:
+        return data.log1p()
+
+def scGCO_normalize_count_cellranger(data,Log=True):
+    '''
+    normalize count as in cellranger
+    
+    :param file: data: A dataframe of shape (m, n);
+    :rtype: data shape (m, n);
+    '''
+    normalizing_factor = np.sum(data, axis = 1)/np.median(np.sum(data, axis = 1)) 
+    # change to to .to_numpy() since some np/pd versions report "ValueError: Multi-dimensional indexing (e.g. `obj[:, None]`) is no longer supported. Convert to a numpy array before indexing instead" 
+    data = pd.DataFrame(data.values/normalizing_factor.to_numpy()[:,np.newaxis], columns=data.columns, index=data.index)
+    # data = pd.DataFrame(data.values/normalizing_factor[:,np.newaxis], columns=data.columns, index=data.index)
+    if Log==True:
+        data=scGCO_log1p(data)
+    else:
+        data=data
+
+    return data
+
+def svi_scGCO(idata, work_dir, overwrite=False, n_jobs=10):
     try:
         import scGCO
         if (overwrite) | (not exists( f'{work_dir}scGCO.csv')):
             t0=time.time()
-            data_norm = scGCO.normalize_count_cellranger(idata.to_df())
+            data_norm = scGCO_normalize_count_cellranger(idata.to_df())
             exp= data_norm.iloc[:,0]
             pos_key=['row', 'col']
             locs = idata.obs[pos_key].to_numpy()
@@ -175,7 +207,7 @@ def svi_scGCO(idata, work_dir, overwrite=False):
     except:
         pass
     
-def svi_SPARKX(idata, work_dir, R_path, overwrite=False):
+def svi_SPARKX(idata, work_dir, R_path, overwrite=False, n_jobs=10):
     try:
         count_f = f'{work_dir}idata_count.csv'
         meta_f = f'{work_dir}idata_meta.csv'
@@ -185,7 +217,7 @@ def svi_SPARKX(idata, work_dir, R_path, overwrite=False):
         if (overwrite) | (not exists( f'{work_dir}SPARKX.csv')):
             t0=time.time()
             with resources.path("spider.R_script", "run_SPARKX.R") as pw_fn:
-                os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir}"'))
+                os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir} {n_jobs}"'))
             idata.uns['SPARKX_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}SPARKX.csv', index_col=0)
         idata.uns['SPARKX'] = result
@@ -193,7 +225,7 @@ def svi_SPARKX(idata, work_dir, R_path, overwrite=False):
     except:
         pass
     
-def svi_SpatialDE2(idata, work_dir, overwrite=False):
+def svi_SpatialDE2(idata, work_dir, overwrite=False, n_jobs=10):
     try:
         if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')):
             from spider import SpatialDE2
@@ -203,14 +235,14 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False):
             svg_full = pd.concat([svg_full.set_index('gene'), individual.loc[individual.groupby('gene').lengthscale.idxmin()].set_index('gene')], axis=1)
             svg_full.to_csv(f'{work_dir}SpatialDE.csv')
             individual.to_csv(f'{work_dir}SpatialDE_individual.csv')
-            idata.uns['SpatialDE2_time'] = time.time()-t0
+            idata.uns['SpatialDE_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}SpatialDE.csv', index_col=0)
         idata.uns['SpatialDE'] = result
         print(f'Added key SpatialDE in idata.uns')
     except:
         pass 
     
-def svi_SpatialDE2_omnibus(idata, work_dir, overwrite=False):
+def svi_SpatialDE2_omnibus(idata, work_dir, overwrite=False, n_jobs=10):
     try:
         if (overwrite) | (not exists(f'{work_dir}SpatialDE_omnibus.csv')):
             from spider import SpatialDE2
@@ -218,7 +250,7 @@ def svi_SpatialDE2_omnibus(idata, work_dir, overwrite=False):
             svg_full, _ = SpatialDE2.test(idata, omnibus=True)
             svg_full = svg_full.set_index('gene')
             svg_full.to_csv(f'{work_dir}SpatialDE_omnibus.csv')
-            idata.uns['SpatialDE2_time'] = time.time()-t0
+            idata.uns['SpatialDE_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}SpatialDE_omnibus.csv', index_col=0)
         idata.uns['SpatialDE'] = result
         print(f'Added key SpatialDE in idata.uns')
@@ -226,7 +258,7 @@ def svi_SpatialDE2_omnibus(idata, work_dir, overwrite=False):
         print(e)
         pass 
 
-def svi_SOMDE(idata, work_dir, overwrite=False, som=None):
+def svi_SOMDE(idata, work_dir, overwrite=False, som=None, n_jobs=10):
     try:
         if (overwrite) | (not exists(f'{work_dir}SOMDE.csv')):
             t0=time.time()
@@ -411,10 +443,10 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-6, 
     else:
         param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold, nclasses=predefined_pattern_number)
     upper_patterns, _ = SpatialDE2.spatial_patterns(idata, normalized=True, genes=allsignifgenes, rng=np.random.default_rng(seed=45), params=param_obj, copy=False)
-    if (predefined_pattern_number == -1) & ((upper_patterns.patterns.shape[1] > 20) | (upper_patterns.patterns.shape[1] < 5)) :
+    if (predefined_pattern_number == -1) & ((upper_patterns.patterns.shape[1] > 20) | (upper_patterns.patterns.shape[1] < 5) | (len(np.unique(upper_patterns.patterns)) == 1)):
         param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold, nclasses=20)
         upper_patterns, _ = SpatialDE2.spatial_patterns(idata, normalized=True, genes=allsignifgenes, rng=np.random.default_rng(seed=45), params=param_obj, copy=False)
-    if (upper_patterns.patterns.shape[1] < 3) :
+    if ((upper_patterns.patterns.shape[1] < 3) | (len(np.unique(upper_patterns.patterns)) == 1)) :
         param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold, nclasses=5)
         upper_patterns, _ = SpatialDE2.spatial_patterns(idata, normalized=True, genes=allsignifgenes, rng=np.random.default_rng(seed=45), params=param_obj, copy=False)
     print(f'eventually found {upper_patterns.patterns.shape[1]} patterns')

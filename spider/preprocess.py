@@ -44,8 +44,9 @@ def impute_MAGIC(adata):
     adata.X = outp
 
 # idata
-def idata_construct(score, pairs_meta, lr_df, lr_raw, adata):
+def idata_construct(score, direction, pairs_meta, lr_df, lr_raw, adata):
     idata = anndata.AnnData(score)
+    idata.layers['direction'] = direction
     idata.obs_names = pairs_meta.index
     idata.var_names = lr_df.index
     idata.uns['lr_meta'] = lr_raw
@@ -80,8 +81,63 @@ def subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite, R_p
         lr_raw['score'] = 1
     return lr_raw
 
+def build_neighbors(row, edges):
+    source_node = row.A
+    target_node = row.B
+    return pd.Series({'A': [n for n in edges.loc[source_node]['neighbor'] if n != target_node],
+                      'B': [n for n in edges.loc[target_node]['neighbor'] if n != source_node]})
+    
+def get_interface_neighbors(adata, interface_meta):
+    neighborA = interface_meta.groupby('A')['B'].apply(list)
+    neighborB = interface_meta.groupby('B')['A'].apply(list)
+    neighbor = pd.concat([neighborA, neighborB], axis=0).reset_index(drop=False)
+    neighbor.columns = ['A', 'B']
+    neighbor = pd.Series(neighbor.groupby('A')['B'].sum())
+    df = pd.DataFrame(index=adata.obs_names, columns=['neighbor'])
+    df['neighbor'] = [[]] * len(df)
+    df.loc[neighbor.index, 'neighbor'] = neighbor.to_numpy()
+    # Function to get neighbors for the source node of an edge
+    interface_neighbor = interface_meta.apply(build_neighbors, args=(df,), axis=1)
+    return interface_neighbor
 
-def score(adata, lr_df, pairs):
+def algebraic_mean(row, df, is_source, alpha=0.3):
+    # alpha is the portion for max
+    if is_source:
+        related_samples = row.A
+    else:
+        related_samples = row.B
+    values = df.loc[related_samples]
+    mean = values.mean() * (1-alpha) + values.max() * alpha
+    return mean
+
+def score(adata, lr_df, pairs, interface_meta):
+    interface_neighbor = get_interface_neighbors(adata, interface_meta)
+    exp_ref = adata.to_df()
+    exp_ref = exp_ref.loc[:,~exp_ref.columns.duplicated()]
+    l = lr_df['ligand'].to_numpy().flatten()
+    r = lr_df['receptor'].to_numpy().flatten()
+    sub_exp = exp_ref[np.concatenate((l, r))]
+    sub_exp_rev = exp_ref[np.concatenate((r, l))]
+    # Compute algebraic mean for each sample
+    neighbor_exp_A = interface_neighbor.apply(algebraic_mean, args=(sub_exp, True), axis=1)
+    neighbor_exp_B = interface_neighbor.apply(algebraic_mean, args=(sub_exp_rev, False), axis=1)
+    mask_A = neighbor_exp_A.isna().any(axis=1)
+    mask_B = neighbor_exp_B.isna().any(axis=1)
+    neighbor_exp_A[mask_A] = sub_exp.loc[interface_meta.A[mask_A]].to_numpy()
+    neighbor_exp_B[mask_B] = sub_exp_rev.loc[interface_meta.B[mask_B]].to_numpy()
+    neighbor_exp_A = neighbor_exp_A.to_numpy()
+    neighbor_exp_B = neighbor_exp_B.to_numpy()
+    sub_exp = sub_exp.to_numpy()
+    sub_exp_rev = sub_exp_rev.to_numpy()
+    # multiply lr exp
+    edge_exp_both = np.multiply(sub_exp[pairs[0]] + neighbor_exp_A, sub_exp_rev[pairs[1]] + neighbor_exp_B)/4
+    print('scoring')
+    print('using neighbor+sqrt+max')
+    score = np.sqrt(np.maximum(edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):]))
+    direction = np.argmax((edge_exp_both[:, :int(len(l))], edge_exp_both[:, int(len(l)):]), 0)
+    return score, direction
+
+def score_v1(adata, lr_df, pairs):
     exp_ref = adata.to_df()
     exp_ref = exp_ref.loc[:,~exp_ref.columns.duplicated()]
     l = lr_df['ligand'].to_numpy().flatten()

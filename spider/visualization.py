@@ -249,3 +249,55 @@ def traj_proj(idata, label, save=''):
             idata, color=label, vkey="T_fwd_spatial", basis="spatial", legend_loc="right",
             recompute=False,V=idata.obsm['T_fwd_spatial'],smooth=1.5,save=save,dpi=300
         )
+        
+def ct_pie(idata, svi, use_direction=True, drop_self=False):
+    df = pd.concat([idata.to_df()[svi],  idata.obs], axis=1)
+    key = 'label'
+    if use_direction:
+        df['direction'] = np.array(idata[:, idata.var_names==svi].layers['direction']).flatten()
+        df['arrow'] = df.apply(lambda x: f'{x.A_label}->{x.B_label}' if x.direction==0 else f'{x.B_label}->{x.A_label}', axis=1)
+        key = 'arrow'
+    if drop_self:
+        df = df[df.A_label != df.B_label]
+    ax = df.groupby(key)[svi].mean().sort_values(ascending=False).plot.pie(colormap='tab20', ylabel='', title=svi, labeldistance=None)
+    ax.legend(bbox_to_anchor=(1, 0.9), loc='upper left', frameon=False, fontsize=8)
+    
+def ct_pies(idata, svi, use_direction=True):
+    plt.subplot(1, 4, 1)
+    ct_pie(idata, svi, use_direction=True)
+    plt.subplot(1, 4, 4)
+    ct_pie(idata, svi, use_direction=True, drop_self=True)
+    
+def rotate_label(plot, element):
+    # white_space = "                              "
+    angles = plot.handles['text_1_source'].data['angle']
+    characters = np.array(plot.handles['text_1_source'].data['text'])
+    plot.handles['text_1_source'].data['text'] = np.array([x + ' ' * (len(x)*2 + 5) if x in characters[np.where((angles < -1.5707963267949) | (angles > 1.5707963267949))] else x for x in plot.handles['text_1_source'].data['text']])
+    plot.handles['text_1_source'].data['text'] = np.array([' ' * (len(x)*2 + 5) + x if x in characters[np.where((angles > -1.5707963267949) | (angles < 1.5707963267949))] else x for x in plot.handles['text_1_source'].data['text']])
+    angles[np.where((angles < -1.5707963267949) | (angles > 1.5707963267949))] += 3.1415926535898
+    plot.handles['text_1_glyph'].text_align = "center"
+
+def vis_ct_chord(idata, svi):
+    import holoviews as hv
+    from holoviews import opts, dim
+    df = pd.concat([idata.to_df()[svi],  idata.obs], axis=1)
+    df['direction'] = np.array(idata[:, idata.var_names==svi].layers['direction']).flatten()
+    df['arrow'] = df.apply(lambda x: f'{x.A_label}->{x.B_label}' if x.direction==0 else f'{x.B_label}->{x.A_label}', axis=1)
+    input_df = df.groupby('arrow')[svi].mean().reset_index(drop=False).query(f'{svi} > 0')
+    input_df[['source', 'target']] = input_df['arrow'].str.split('->', expand=True).to_numpy() 
+    node_df = pd.DataFrame(index=np.unique(np.concatenate((input_df['source'].to_numpy(), input_df['target'].to_numpy()))))
+    node_df['group'] = 1
+    links_df = input_df[['source', 'target', svi]]
+    links_df.columns = ['source', 'target', 'value']
+
+    hv.extension('bokeh')
+    hv.output(size=200)
+
+    nodes = hv.Dataset(node_df, 'index')
+
+    chord = hv.Chord((links_df, nodes))
+    chord.opts(
+        opts.Chord(cmap='Set2', edge_cmap='Set2', edge_color=dim('source').str(), 
+                labels='index', node_color=dim('index').str(),   hooks=[rotate_label]),
+     )
+    return chord

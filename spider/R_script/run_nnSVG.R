@@ -26,6 +26,6 @@ spe <- computeLibraryFactors(spe)
 spe <- logNormCounts(spe)
 
 set.seed(20230617)
-spe <- nnSVG(spe, n_threads = 1)
+spe <- nnSVG(spe, n_threads = strtoi(args[7]))
 
 write.csv(rowData(spe), paste0(out_f,"nnSVG.csv"), row.names = TRUE)
