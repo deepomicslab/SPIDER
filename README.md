@@ -64,7 +64,7 @@ op=spider.SPIDER()
 idata = op.prep(adata, out_f,  R_path, cluster_key='region', is_human=True, coord_type='grid')
 
 # running SVI tests
-idata, abstract_idata = op.find_svi(idata, out_f,  R_path, alpha=0.3)
+idata, abstract_idata = op.find_svi(idata, out_f,  R_path, alpha=0.3, no_spatalk=True, imputation=False)
 
 # visualize SVI
 op.vis.pattern_LRI(idata,show_SVI=10)
@@ -72,7 +72,7 @@ op.vis.pattern_LRI(idata,show_SVI=10)
 
 Outputs:
 
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_PDAC_A_patterns(supp).png)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/demo_pattern.png)
 
 ```python
 # combine SVI with p-value threshold
@@ -84,7 +84,7 @@ op.svi.eva_SVI(idata, svi_df_strict)
 
 Outputs:
 
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_PDAC_A_metric.png)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/demo_sva_svi.png)
 
 ```python
 # plot correlations of patterns and member SVIs
@@ -93,7 +93,7 @@ op.svi.eva_pattern(idata)
 
 Outputs:
 
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_PDAC_A_pattern_metric.png)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/demo_pattern_eva.png)
 
 <!-- ```python
 # transform SVI pattern from interfaces to spots
@@ -109,6 +109,6 @@ Outputs:
 
 Check the correlations between SVIs and deconvoluted celltypes:
 
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_PDAC_A_decon_SVI(main3C).png)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/demo_celltypes.png)
 
 
