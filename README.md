@@ -84,7 +84,7 @@ op.svi.eva_SVI(idata, svi_df_strict)
 
 Outputs:
 
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/demo_sva_svi.png)
+![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/demo_eva_svi.png)
 
 ```python
 # plot correlations of patterns and member SVIs
