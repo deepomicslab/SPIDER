@@ -4,7 +4,7 @@ SPIDER constructs cell-cell interaction interfaces with minimized Dirichlet ener
 
 ## 
 > [!IMPORTANT]  
-> Try SPIDER on CodeOcean at **[Capsule 3209985]([https://eff.org](https://codeocean.com/capsule/3209985/tree))**!
+> Try SPIDER on CodeOcean at **[Capsule 3209985](https://codeocean.com/capsule/3209985/tree)** now - no installation required!
 
 ## Install
 First, creast a conda enviroment with python=3.8
