@@ -2,6 +2,9 @@
 
 SPIDER constructs cell-cell interaction interfaces with minimized Dirichlet energy, models interface profiles with knowledge-graph-informed interaction signals, and identifies spatially variable signals with multiple probabilistic models.
 
+## Try SPIDER on CodeOcean!
+<script src="https://codeocean.com/widget.js?slug=3209985" async></script>
+
 ## Install
 First, creast a conda enviroment with python=3.8
 ```shell
