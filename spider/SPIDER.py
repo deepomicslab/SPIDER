@@ -1,62 +1,67 @@
 import pandas as pd
-
-
+import numpy as np
 from . import svi
 from . import preprocess
-from . import clustering
 from . import enrichment
 from . import visualization
 from . import util
-from . import trajectory
+from . import ot
 
 class SPIDER():
     def __init__(self):
         self.svi = svi
         self.pp = preprocess
-        self.cl = clustering
         self.er = enrichment
         self.vis = visualization
         self.util = util
-        self.traj = trajectory
+        self.ot = ot
         pass
 
     def prep(self,
-            adata_input, work_dir, R_path,
-            no_spatalk=False,
+            adata_input, 
             cluster_key='type', 
             is_human=True, 
-            n_neighs=5, 
-            coord_type='generic', 
-            imputation=True,
-            overwrite=False,
+            cutoff=None,
+            imputation=False,
+            itermax = 1000,
+            lr_raw = None,
+            pathway_raw = None,
+            is_sc=False,
+            normalize_total = False,
     ):
         adata = adata_input.copy()
         del adata_input
-        # Prep: find lr pairs and subset adata to have only lr genes
-        lr_raw = preprocess.subset_lr(adata, no_spatalk, work_dir, cluster_key, is_human, overwrite, R_path)
-        lr_df, adata = preprocess.subset_adata(adata, lr_raw, imputation)
+        # Prep: find lr pairs and subset adata to have only lr genes and tf genes
+        if lr_raw is None:
+            lr_raw = preprocess.subset_lr(is_human)
+        if pathway_raw is None:
+            pathway_raw = preprocess.load_pathway_df(is_human)
+        lr_df, pathway_df, adata = preprocess.subset_adata(adata, lr_raw, pathway_raw, imputation, normalize_total)
         # Step: construct interface
-        interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, coord_type=coord_type, n_neighs=n_neighs, cluster_key=cluster_key)
+        interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, cluster_key, lr_df, cutoff=cutoff, is_sc=is_sc)
         # Step: compute interface profile
-        score, direction = preprocess.score(adata, lr_df, interface_cell_pair, interface_meta)
-        # Idata object construction
-        idata = preprocess.idata_construct(score, direction, interface_meta, lr_df, lr_raw, adata)
+        score, direction, _, _, _ = preprocess.score_ot(adata, lr_df, interface_meta, interface_cell_pair, itermax=itermax)
+        # idata object construction
+        idata = preprocess.idata_construct(score, direction, interface_meta, lr_df, lr_raw, pathway_df, adata, drop=False, normalize_total=normalize_total)
         return idata
 
-    def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=5, alpha=0.3, threshold=0.01, pattern_prune_threshold=1e-6, predefined_pattern_number=-1, svi_number=10, n_jobs=10):
+    def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=5, alpha=0.3, threshold=0.01, pattern_prune_threshold=1e-20, predefined_pattern_number=-1, svi_number=10, n_jobs=10):
         from os.path import exists
         from os import mkdir
+        
         if not exists(out_f):
             print(f'Creating folder {out_f}')
             mkdir(out_f)
         if len(idata) < 1000:
-            print('number of interface is less than 1000, skipping abstraction')
+            print('number of interface is less than 2000, skipping abstraction')
             abstract=False
         if abstract:
             som, idata, meta_idata = svi.abstract(idata, n_neighbors, alpha)
-            svi.find_svi(meta_idata,out_f, overwrite, R_path, som=som, n_jobs=n_jobs) #generating results
+            svi.find_svi(meta_idata, out_f, overwrite, R_path, som=som, n_jobs=n_jobs) #generating results
             print('finished running all SVI tests')
-            svi_df, svi_df_strict = svi.combine_SVI(meta_idata,threshold=threshold, svi_number=svi_number)
+            if 'tf_support_count' in idata.var.columns:
+                meta_idata.var['tf_support_count'] = idata.var['tf_support_count']
+            svi_df, svi_df_strict = svi.combine_SVI(meta_idata, threshold=threshold, svi_number=svi_number)
             if (overwrite) | (not exists(f'{out_f}pattern.csv')):
                 svi.SVI_patterns(meta_idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold, predefined_pattern_number=predefined_pattern_number)
                 pd.DataFrame(meta_idata.obsm['pattern_score']).to_csv(f'{out_f}pattern.csv')
@@ -68,7 +73,7 @@ class SPIDER():
             pd.DataFrame(meta_idata.obsm['pattern_score']).to_csv(f'{out_f}full_pattern.csv')
         else:
             svi.find_svi(idata, out_f, overwrite, R_path, n_jobs=n_jobs) #generating results
-            svi_df, svi_df_strict = svi.combine_SVI(idata,threshold=threshold, svi_number=svi_number)
+            svi_df, svi_df_strict = svi.combine_SVI(idata, threshold=threshold, svi_number=svi_number)
             if (overwrite) | (not exists(f'{out_f}pattern.csv')):
                 svi.SVI_patterns(idata, svi_df_strict, pattern_prune_threshold=pattern_prune_threshold, predefined_pattern_number=predefined_pattern_number)
                 pd.DataFrame(idata.obsm['pattern_score']).to_csv(f'{out_f}pattern.csv')
@@ -80,6 +85,39 @@ class SPIDER():
         idata.var[[f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = 0
         corr_df=pd.concat([idata[:,idata.var['is_svi']==1].to_df(),pd.DataFrame(idata.obsm['pattern_score'],index=idata.obs_names)],axis=1).corr().loc[idata[:,idata.var['is_svi']==1].var_names, range(idata.obsm['pattern_score'].shape[1])]
         idata.var.loc[idata[:,idata.var['is_svi']==1].var_names, [f'pattern_correlation_{x}' for x in range(idata.obsm['pattern_score'].shape[1])]] = corr_df.to_numpy()
+        if 'tf_corr' in idata.uns.keys():
+            idata.uns['tf_corr'].replace(np.nan, 0, inplace=True)
+        
+        # svi.tf_pattern_to_idata(idata, idata_tf)
+        
+        return idata, meta_idata
+    
+    def find_svi_without_pattern(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=5, alpha=0.3, threshold=0.01, pattern_prune_threshold=1e-6, predefined_pattern_number=-1, svi_number=10, n_jobs=10):
+        from os.path import exists
+        from os import mkdir
+
+        if 'tf_support_count' not in idata.var.columns:
+            print('not using tf info')
+            idata.var['tf_support_count'] = 1
+            idata.uns['tf_corr'] = pd.DataFrame()
+
+        if not exists(out_f):
+            print(f'Creating folder {out_f}')
+            mkdir(out_f)
+        if len(idata) < 1000:
+            print('number of interface is less than 1000, skipping abstraction')
+            abstract=False
+        if abstract:
+            som, idata, meta_idata = svi.abstract(idata, n_neighbors, alpha)
+            svi.find_svi(meta_idata, out_f, overwrite, R_path, som=som, n_jobs=n_jobs, skip_metric=True) #generating results
+            if 'tf_support_count' in idata.var.columns:
+                meta_idata.var['tf_support_count'] = idata.var['tf_support_count']
+            svi_df, svi_df_strict = svi.combine_SVI(meta_idata, threshold=threshold, svi_number=svi_number)
+        else:
+            svi.find_svi(idata, out_f, overwrite, R_path, n_jobs=n_jobs, skip_metric=True) #generating results
+            svi_df, svi_df_strict = svi.combine_SVI(idata, threshold=threshold, svi_number=svi_number)
+            meta_idata = None
+        idata.uns['tf_corr'].replace(np.nan, 0, inplace=True)
         return idata, meta_idata
         
     def cell_transform(self, idata, adata, label=None):
@@ -104,13 +142,71 @@ class SPIDER():
             adata_pattern.obs = idata.uns['cell_meta']
             adata_pattern = adata_pattern[~adata_pattern.obs[label].isin(small_clust),:]
             rank_genes_groups(adata_pattern, groupby=label)
-            adata.uns['rank_interaction_pattern_groups'] = adata_pattern.uns['rank_genes_groups']                                                          
+            adata.uns['rank_interaction_pattern_groups'] = adata_pattern.uns['rank_genes_groups']   
+                  
+            adata_lri.obsm['spatial'] = pd.DataFrame(adata.obsm['spatial'], index=adata.obs_names).loc[adata_lri.obs_names].to_numpy()                                       
+            adata_pattern.obsm['spatial'] = pd.DataFrame(adata.obsm['spatial'], index=adata.obs_names).loc[adata_pattern.obs_names].to_numpy()                                       
+                                                          
             print(f'Added key rank_interaction_score_groups, rank_interaction_pattern_groups in adata.uns')   
         adata.obsm['interaction_pattern'] = adata.obsm['interaction_pattern'].to_numpy()                                                   
-        adata.obsm['interaction_score'] = adata.obsm['interaction_score'].to_numpy()                                                   
+        adata.obsm['interaction_score'] = adata.obsm['interaction_score'].to_numpy()                                         
         return adata, adata_lri, adata_pattern
     
+    # DEVELOPTAL FUNCTION
 
+    def prep_exp(self,
+            adata_input, 
+            cluster_key='type', 
+            is_human=True, 
+            cutoff=None,
+            imputation=False,
+            lr_raw = None,
+            is_sc=True,
+            normalize_total = False,
+    ):
+        adata = adata_input.copy()
+        del adata_input
+        # Prep: find lr pairs and subset adata to have only lr genes
+        lr_raw = preprocess.subset_lr(is_human)
+        lr_df, adata = preprocess.subset_adata(adata, lr_raw, imputation)
+        # Step: construct interface
+        interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, cluster_key, lr_df, cutoff=cutoff, is_sc=is_sc)
+        # Step: compute interface profile
+        score, direction = preprocess.score(adata, lr_df, interface_cell_pair, interface_meta)
+        # idata object construction
+        idata = preprocess.idata_construct(score, direction, interface_meta, lr_df, lr_raw, adata, drop=False, normalize_total=normalize_total)
+        return idata
+    
 
+    def prep_compare(self,
+            adata_input, 
+            cluster_key='type', 
+            is_human=True, 
+            cutoff=None,
+            imputation=False,
+            itermax = 1000,
+            lr_raw = None,
+            is_sc=True,
+            normalize_total = False,
+    ):
+        adata = adata_input.copy()
+        del adata_input
+        # Prep: find lr pairs and subset adata to have only lr genes
+        if lr_raw is None:
+            lr_raw = preprocess.subset_lr(is_human)
+        lr_df, adata = preprocess.subset_adata(adata, lr_raw, imputation, normalize_total)
+        # Step: construct interface
+        interface_cell_pair, interface_meta = preprocess.find_interfaces(adata, cluster_key, lr_df, cutoff=cutoff, is_sc=is_sc)
+        # Step: compute interface profile
+        # score, direction = preprocess.score(adata, lr_df, interface_cell_pair, interface_meta)
+        score, direction, _, _, _ = preprocess.score_ot(adata, lr_df, interface_meta, interface_cell_pair, itermax=itermax)
+        # score, direction, _, _, _ = preprocess.score_ot_entropy(adata, lr_df, interface_meta, interface_cell_pair, itermax=itermax)
+        # score, direction, _, _, _ = preprocess.score_ot_weighted(adata, lr_df, interface_meta, interface_cell_pair, itermax=itermax, alpha=alpha)
+        # idata object construction
+        idata = preprocess.idata_construct(score, direction, interface_meta, lr_df, lr_raw, adata, drop=False, normalize_total=normalize_total)
+
+        score_old, direction_old = preprocess.score(adata, lr_df, interface_cell_pair, interface_meta)
+        idata_old = preprocess.idata_construct(score_old, direction_old, interface_meta, lr_df, lr_raw, adata)
+        return idata, idata_old
 
 

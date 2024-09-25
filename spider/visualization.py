@@ -1,8 +1,11 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import scanpy as sc
 import seaborn as sns
+from statannotations.Annotator import Annotator
 from .preprocess import load_lr_df
+from .util import compare_var
 
 def viz_interface_pattern(idata, pos_key=['row', 'col'], label='',  histology=None):
     plt.figure(figsize=(15, 15))
@@ -39,7 +42,8 @@ def pattern_LRI(idata, label='', pos_key=[], obsm_key='pattern_score', show_SVI=
             im=plt.scatter(idata.obs['row'], idata.obs['col'], c=idata.obsm[obsm_key][:,i], s=spot_size, cmap='plasma', edgecolors='none',linewidths=0)
             plt.axis('equal')
             plt.axis('off')
-            plt.title('Pattern {} - {} LRIs'.format(i, np.sum(idata.var.label == i)) )
+            plt.title('Pattern {}'.format(i) )
+            # plt.title('Pattern {} - {} LRIs'.format(i, np.sum(idata.var.label == i)) )
             plt.colorbar(im,fraction=0.046, pad=0.04)
     else:
         for i in range(idata.obsm[obsm_key].shape[1]):
@@ -123,6 +127,7 @@ def enrichment(df, x_key='ordered_group', figsize=None, size=None, save=None, cu
     df=df[df[x_key]!='-1']
     if not figsize:
         figsize = (3, int(top_term*len(df[x_key].unique())/10))
+    # print(figsize)
     if not size:
         size = int(top_term*len(df[x_key].unique())/20)
     ax = gseapy.dotplot(df,figsize=figsize, 
@@ -300,4 +305,164 @@ def vis_ct_chord(idata, svi):
         opts.Chord(cmap='Set2', edge_cmap='Set2', edge_color=dim('source').str(), 
                 labels='index', node_color=dim('index').str(),   hooks=[rotate_label]),
      )
+    return chord
+
+def compare_ot_coexp_v1(idata_ot, idata_coexp, title=''):
+    var_ot = idata_ot.to_df().var(axis=0)
+    mean_ot = idata_ot.to_df().mean(axis=0)
+    sd_ot = idata_ot.to_df().std(axis=0)
+    cv_ot = var_ot/mean_ot
+    cv2_ot = var_ot/(mean_ot**2)
+
+    var_raw = idata_coexp.to_df().var(axis=0)
+    mean_raw = idata_coexp.to_df().mean(axis=0)
+    sd_raw = idata_coexp.to_df().std(axis=0)
+    cv_raw = var_raw/mean_raw
+    cv2_raw = var_raw/(mean_raw**2)
+
+    box_df_ot = pd.DataFrame({'var':var_ot, 'sd':sd_ot, 'cv':cv_ot, 'cv2':cv2_ot}, index = idata_ot.var_names).melt()
+    box_df_ot['formulation'] = 'Optimal Transport'
+    box_df_raw = pd.DataFrame({'var':var_raw, 'sd':sd_raw, 'cv':cv_raw, 'cv2':cv2_raw}, index = idata_coexp.var_names).melt()
+    box_df_raw['formulation'] = 'Co-expression'
+
+    box_df = pd.concat([box_df_ot, box_df_raw])
+    box_df['value (log-scaled)'] = np.log(box_df['value'])
+    box_df.columns = ['metric', 'value', 'formulation', 'value (log-scaled)']
+    # box_df = box_df[box_df.metric.isin(['cv', 'cv2'])]
+    # box_df = box_df[box_df.metric != 'sd' & box_df.metric != 'var']
+    ax = sns.boxplot(data=box_df, x='metric', y='value (log-scaled)', hue='formulation',
+                     hue_order=['Optimal Transport', 'Co-expression'], showfliers=False, palette=['#80b1d3', '#fb8072'])
+    pairs = []
+    # for i in ['cv', 'cv2']:
+    for i in ['var', 'sd', 'cv', 'cv2']:
+        pairs.append( ((i, 'Optimal Transport'), (i, 'Co-expression')))
+    annot = Annotator(ax, pairs, data=box_df, x='metric',y='value (log-scaled)', 
+                      hue='formulation', hue_order=['Optimal Transport', 'Co-expression'])
+    # annot.configure(test='Mann-Whitney-gt',comparisons_correction="BH", correction_format="replace")
+    annot.configure(test='Mann-Whitney-ls',comparisons_correction="BH", correction_format="replace")
+    annot.apply_test()
+    annot.annotate()
+    if title != '':
+        plt.title(title)
+    plt.show()
+    
+def compare_ot_coexp(diff_local, title=''):
+    ax = sns.boxplot(data=diff_local, x='n_neighbor', y='diff', hue='formulation',
+                     hue_order=['Optimal Transport', 'Co-expression'], showfliers=False, palette=['#80b1d3', '#fb8072'])
+    pairs = []
+    # for i in ['cv', 'cv2']:
+    for i in diff_local.n_neighbor.unique():
+        pairs.append( ((i, 'Optimal Transport'), (i, 'Co-expression')))
+    annot = Annotator(ax, pairs, data=diff_local, x='n_neighbor',y='diff', 
+                      hue='formulation', hue_order=['Optimal Transport', 'Co-expression'])
+    # annot.configure(test='Mann-Whitney-gt',comparisons_correction="BH", correction_format="replace")
+    annot.configure(test='Mann-Whitney-ls',comparisons_correction="BH", correction_format="replace")
+    annot.apply_test()
+    annot.annotate()
+    if title != '':
+        plt.title(title)
+    plt.show()
+    
+def compare_interface_capacity(idata, idata_old, title='', save=''):
+    n_interface, mae_v1, mae_v2, mse_v1, mse_v2, r2_v1, r2_v2, y_true, y_pred_v1, y_pred_v2 = compare_var(idata, idata_old)
+    fig, axes = plt.subplots(1,4,figsize=(15,4))
+
+    maes = [mae_v1, mae_v2]   
+    mses = [mse_v1, mse_v2]
+    r2s = [r2_v1, r2_v2]
+
+    # MAE plot
+    axes[0].bar(['v1','v2'], maes, color=['#fb8072', '#80b1d3'])
+    axes[0].set_xticks(['v1','v2'])
+    axes[0].set_xticklabels(['Delauney','Capacity']) 
+    axes[0].plot(['v1','v2'], maes, color='#fb8072')
+    axes[0].set_title('MAE')
+
+    # MSE plot
+    axes[1].bar(['v1','v2'], mses, color=['#fb8072', '#80b1d3'])  
+    axes[1].set_xticks(['v1','v2'])
+    axes[1].set_xticklabels(['Delauney','Capacity'])
+    axes[1].plot(['v1','v2'], mses, color='#fb8072')  
+    axes[1].set_title('MSE')
+
+    # R2 plot  
+    axes[2].bar(['v1','v2'], r2s, color=['#fb8072', '#80b1d3'])
+    axes[2].set_xticks(['v1','v2'])  
+    axes[2].set_xticklabels(['Delauney','Capacity'])
+    axes[2].plot(['v1','v2'], r2s, color='#fb8072')
+    axes[2].set_title('R2 Score')
+    
+    axes[3].plot(y_true, y_true - y_pred_v1, 'o', color='#fb8072', label='Delauney')
+    axes[3].plot(y_true+0.3, y_true - y_pred_v2, 'o', color='#80b1d3', label='Capacity')  
+    axes[3].axhline(y=0, color='black')
+    axes[3].set_title('Residuals')
+    axes[3].legend()
+    
+    
+    if title == '':
+        fig.suptitle('Metric comparisons')
+    else:
+        fig.suptitle(title)
+    fig.tight_layout()
+    plt.show()
+    
+    if save != '':
+        n_interface.to_csv(save+'n_interface.csv')
+    
+    return n_interface
+
+def plot_top_tf(idata, lri, show_tf=5, spot_size=1):
+    tfs_corr = idata.uns['tf_corr'].loc[lri].sort_values(ascending=False)[:show_tf]
+    tfs_corr = tfs_corr[tfs_corr!=0]
+    if len(tfs_corr) == 0:
+        print('no correlated TF')
+    else:
+        cols = [f'{x[0]}\ncorr={x[1]}' for x in tfs_corr.reset_index().to_numpy()]
+        col_names = [lri+'-'+tf for tf in tfs_corr.index]
+        idata.obs[cols] = idata.obsm['tf_score'][col_names]
+        cols = [lri] + cols
+        sc.pl.spatial(idata, color=cols, spot_size=spot_size, ncols=len(cols))
+        
+def pattern_chord(idata, pattern):
+    import holoviews as hv
+    from holoviews import opts, dim
+    df = pd.concat([idata.to_df()[svi],  idata.obs], axis=1)
+    df['direction'] = np.array(idata[:, idata.var_names==svi].layers['direction']).flatten()
+    df['arrow'] = df.apply(lambda x: f'{x.A_label}->{x.B_label}' if x.direction==0 else f'{x.B_label}->{x.A_label}', axis=1)
+    input_df = df.groupby('arrow')[svi].mean().reset_index(drop=False).query(f'{svi} > 0')
+    input_df[['source', 'target']] = input_df['arrow'].str.split('->', expand=True).to_numpy() 
+    node_df = pd.DataFrame(index=np.unique(np.concatenate((input_df['source'].to_numpy(), input_df['target'].to_numpy()))))
+    node_df['group'] = 1
+    links_df = input_df[['source', 'target', svi]]
+    links_df.columns = ['source', 'target', 'value']
+
+    hv.extension('bokeh')
+    hv.output(size=200)
+
+    nodes = hv.Dataset(node_df, 'index')
+    def rotate_label(plot, element):
+        angles = plot.handles['text_1_source'].data['angle']
+        characters = np.array(plot.handles['text_1_source'].data['text'])
+        plot.handles['text_1_source'].data['text'] = np.array([x + ' ' * int(len(x)) if x in characters[np.where((angles < -1.5707963267949) | (angles > 1.5707963267949))] else x for x in plot.handles['text_1_source'].data['text']])
+        new_text = []
+        for x in plot.handles['text_1_source'].data['text']:
+            new = x
+            if x in characters[np.where((angles > -1.5707963267949) & (angles < 1.5707963267949))]:
+                new = ' ' * int(len(x)) + new
+            if x in characters[np.where((angles > -1.5707963267949) & (angles < 0))]:
+                new = '\n\n' + new
+            else:
+                new = new + '\n\n'
+            new_text.append(new)
+        plot.handles['text_1_source'].data['text'] = np.array(new_text)
+        angles[np.where((angles > 1.5707963267949))] = 0 # left top
+        angles[np.where((angles < -1.5707963267949))] = 0  # left bottom
+        angles[np.where((angles < 1.5707963267949)  & (angles > 0) )] = 0 # right top
+        angles[np.where((angles > -1.5707963267949) & (angles < 0))] = 0 # right bottom
+        plot.handles['text_1_glyph'].text_align = "center"
+    chord = hv.Chord((links_df, nodes))
+    chord.opts(
+        opts.Chord(cmap='Set2', edge_cmap='Set2', edge_color=dim('source').str(), 
+                labels='index', node_color=dim('index').str(),   hooks=[rotate_label], label_text_font_size='17pt', title=f'{svi}'),
+    )
     return chord

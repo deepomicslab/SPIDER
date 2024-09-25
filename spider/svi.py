@@ -9,6 +9,263 @@ import warnings
 warnings.filterwarnings('ignore')
 import time
 from importlib import resources
+from scipy import sparse
+from joblib import Parallel, delayed
+from tqdm import tqdm
+
+
+def tf_corr(idata, adata, is_human, out_f, threshold=0.3, n_jobs=20, overwrite=False, step=None, pathways=[], keep_top_score=None, smooth=False):
+    lr_df = idata.var[['ligand', 'receptor']]
+    if len(pathways) == 0:
+        pathways = subset_pathway_df(load_pathway_df(is_human), lr_df, adata)
+    else:
+        pathways = subset_pathway_df(pathways, lr_df, adata)
+    print(pathways.head())
+    unique_genes = np.unique(pathways[['src', 'dest']])
+    value_to_index = {value: idx for idx, value in enumerate(unique_genes)}
+    pathways['src_idx'] = pathways['src'].map(value_to_index)
+    pathways['dest_idx'] = pathways['dest'].map(value_to_index)
+    lr_df['receptor_idx'] = lr_df['receptor'].map(value_to_index)
+    lr_df = lr_df.replace(np.nan, -1)
+    lr_df['receptor_idx'] = lr_df['receptor_idx'].astype(int)
+    hop1, sub_hop1, sub_hop2, sub_hop3, with_sv_tf_r, \
+        sv_target_genes, sv_target_genes_index = get_ref_hops(adata, pathways, unique_genes, lr_df, value_to_index)
+    idata.var['with_sv_tf'] = lr_df['with_sv_tf']
+    print(f'Testing {idata.var["with_sv_tf"].sum()}/{len(idata.var)} LRIs ({int(100*round(idata.var["with_sv_tf"].sum()/len(idata.var), 2))}%) with SV target genes.')
+    if (overwrite) | (not exists( f'{out_f}sparse_tf_corr.npz')):
+        if smooth:
+            neighborA = idata.obs.groupby('A')['B'].apply(list)
+            neighborB = idata.obs.groupby('B')['A'].apply(list)
+            neighbor = pd.concat([neighborA, neighborB], axis=0).reset_index(drop=False)
+            neighbor.columns = ['A', 'B']
+            neighbor = pd.Series(neighbor.groupby('A')['B'].sum())
+
+            adata_exp = pd.DataFrame(idata.uns['tf_count'], columns=idata.uns['tf_header'], index=adata.obs_names)
+            adata_exp_copy = adata_exp.copy()
+            for cell in adata_exp.index:
+                if cell in neighbor.index:
+                    related_spots = neighbor.loc[cell]
+                    adata_exp_copy.loc[cell] =  (adata_exp.loc[cell] + algebraic_mean(related_spots, adata_exp)) * 0.5
+            adata_exp = adata_exp_copy.to_numpy()
+        
+            smth_eta = 1
+            smth_nu = 1
+            smth_kernel = 'exp'
+            from scipy.spatial import distance_matrix
+            kernel_D = distance_matrix(adata.obsm["spatial"], adata.obsm["spatial"])
+            for i in range(adata_exp.shape[1]):
+                nzind = np.where(adata_exp[:,i] > 0)[0]
+                phi = kernel_function(kernel_D[nzind,:][:,nzind], smth_eta, smth_nu, smth_kernel, normalization='unit_col_sum')
+                adata_exp[nzind,i] = np.matmul( phi, adata_exp[nzind,i].reshape(-1,1) )[:,0]
+            adata_exp = pd.DataFrame(adata_exp, columns=idata.uns['tf_header'], index=adata.obs_names)
+        else:
+            adata_exp = pd.DataFrame(idata.uns['tf_count'], columns=idata.uns['tf_header'], index=adata.obs_names)
+            
+        
+        pseudo_count = 1e-10
+        adata_exp[adata_exp < pseudo_count] = pseudo_count
+        gene_name_map = {value: key for key, value in value_to_index.items()}
+        # adata_exp = pd.DataFrame(adata_exp, index=adata.obs_names, columns=adata.var_names)
+        adata_exp = adata_exp / adata_exp.max(axis=0).values
+        major_df = run_cells(adata_exp, unique_genes, sv_target_genes, with_sv_tf_r, hop1, 
+                                    sub_hop1, sub_hop2, sub_hop3, 
+                                    sv_target_genes_index, gene_name_map, n_jobs=n_jobs)
+        results_corrs, results_tf_scores = run_receptors(major_df, idata, n_jobs=n_jobs, keep_top_score=keep_top_score)
+        
+        # save correlaitons result
+        sparse.save_npz(f'{out_f}sparse_tf_corr.npz', sparse.csr_matrix(results_corrs.values))
+        pd.Series(results_corrs.columns).to_csv(f'{out_f}tf_corr_columns.csv')
+        pd.Series(results_corrs.index).to_csv(f'{out_f}tf_corr_index.csv')
+        
+        # save score result
+        sparse.save_npz(f'{out_f}sparse_tf_scores.npz', sparse.csr_matrix(results_tf_scores.values))
+        pd.Series(results_tf_scores.columns).to_csv(f'{out_f}tf_scores_columns.csv')
+        pd.Series(results_tf_scores.index).to_csv(f'{out_f}tf_scores_index.csv')
+
+
+    sparse_mat = sparse.csr_matrix(sparse.load_npz(f'{out_f}sparse_tf_corr.npz'))
+    columns = pd.read_csv(f'{out_f}tf_corr_columns.csv', index_col=0).to_numpy().flatten()
+    index = pd.read_csv(f'{out_f}tf_corr_index.csv', index_col=0).to_numpy().flatten()
+    idata.uns['tf_corr'] = pd.DataFrame(sparse_mat.A, index=index, columns=columns)
+    
+    sparse_mat = sparse.csr_matrix(sparse.load_npz(f'{out_f}sparse_tf_scores.npz'))
+    columns = pd.read_csv(f'{out_f}tf_scores_columns.csv', index_col=0).to_numpy().flatten()
+    index = pd.read_csv(f'{out_f}tf_scores_index.csv', index_col=0).to_numpy().flatten()
+    idata.obsm['tf_score'] = pd.DataFrame(sparse_mat.A, index=index, columns=columns)
+    weight = count_tf(idata, threshold=threshold) 
+    if step is not None:
+        while weight > 0.5 or threshold >= 0.1:
+            threshold = round(threshold - step, 2)
+            weight = count_tf(idata, threshold=threshold)
+        
+
+def count_tf(idata, threshold=0.3):
+    tf_count = (idata.uns['tf_corr'] > threshold).sum(axis=1).sort_values(ascending=False)
+    print(f'{sum(tf_count > 0)}/{idata.var["with_sv_tf"].sum()} LRIs ({int(100*round(sum(tf_count > 0)/idata.var["with_sv_tf"].sum(), 2))}%) are predicted to be activated by downstream genes (threshold={threshold}).')
+    idata.var['tf_support_count'] = -1
+    idata.var.loc[tf_count.index, 'tf_support_count'] = tf_count
+    print(f'Excluded {sum(tf_count == 0)}/{idata.shape[1]} LRIs ({int(100*round(sum(tf_count == 0)/idata.shape[1], 2))}%) without SV support (threshold={threshold}).')
+    return 1-sum(tf_count > 0)/idata.var["with_sv_tf"].sum()
+        
+def algebraic_mean(related_samples, df, alpha=0.3):
+    # alpha is the portion for max
+    values = df.loc[related_samples]
+    mean = values.mean() * (1-alpha) + values.max() * alpha
+    return mean
+
+def kernel_function(x, eta, nu, kernel, normalization=None):
+    if kernel == "exp":
+        phi = np.exp(-np.power(x/eta, nu))
+    elif kernel == "lorentz":
+        phi = 1 / ( 1 + np.power(x/eta, nu) )
+    else:
+        phi = x
+    if normalization == "unit_row_sum":
+        phi = (phi.T / np.sum(phi.T, axis=0)).T
+    elif normalization == "unit_col_sum":
+        phi = phi / np.sum(phi, axis=0)
+    return phi
+
+def load_pathway_df(is_human):
+    from importlib import resources
+    with resources.path("spider.lrdb", "pathways.tsv") as pw_fn:
+        pw_list = pd.read_csv(pw_fn, sep='\t', index_col=0)
+    if is_human:
+        print('Using human pathway dataset.')
+        pw_list = pw_list[pw_list.species=='Human']
+    else:
+        print('Using mouse pathway dataset.')
+        pw_list = pw_list[pw_list.species=='Mouse']
+    return pw_list
+
+def subset_pathway_df(pathways, lr_df, adata):
+    pathways = pathways[['src', 'dest']]
+    pathways.index = pathways['src'] + '_' + pathways['dest']
+    # remove pathways that are in the lrdb by index as we only want the downstream targets
+    pathways = pathways[~pathways.index.isin(lr_df.index)]
+    pathways = pathways[pathways['src'].isin(adata.var_names) | pathways['dest'].isin(adata.var_names)] # to tolerate missing points in pathwaay
+    pathways = pathways.drop_duplicates()
+    return pathways
+
+def get_ref_hops(adata, pathways, unique_genes, lr_df, value_to_index):
+    from scipy import sparse
+    hop1 = sparse.csr_matrix((np.ones(len(pathways)), (pathways['src_idx'], pathways['dest_idx'])),
+                                shape=(len(unique_genes), len(unique_genes)))
+    hop2 = hop1.dot(hop1)
+    hop3 = hop2.dot(hop1)
+    r_index = lr_df['receptor_idx'].unique()
+    r_index = np.array([x for x in r_index if x != -1])
+    
+    svg = adata.var[adata.var['label'] != -1].index.to_numpy()
+    sv_target_genes  = np.intersect1d(svg, unique_genes)
+    sv_target_genes_index = np.array([value_to_index[gene] for gene in sv_target_genes])
+    print(f'Found {len(sv_target_genes)} SV pathway nodes.')
+
+    # sub_hop: receptor x sv target genes
+    sub_hop1 = hop1[r_index, :][:, sv_target_genes_index].A
+    sub_hop2 = hop2[r_index, :][:, sv_target_genes_index].A
+    sub_hop3 = hop3[r_index, :][:, sv_target_genes_index].A
+    sum_path_all_htop = (sub_hop1 + sub_hop2 + sub_hop3).sum(axis=1)
+    with_sv_tf_r = r_index[sum_path_all_htop != 0]
+    print(f'Found {len(with_sv_tf_r)}/{len(sum_path_all_htop)} receptors ({int(100*round(len(with_sv_tf_r)/len(sum_path_all_htop), 2))}%) with SV target genes.')
+    sub_hop1 = hop1[with_sv_tf_r, :][:, sv_target_genes_index].A
+    sub_hop2 = hop2[with_sv_tf_r, :][:, sv_target_genes_index].A
+    sub_hop3 = hop3[with_sv_tf_r, :][:, sv_target_genes_index].A
+
+    lr_df['with_sv_tf'] = 0
+    lr_df.loc[lr_df['receptor_idx'].isin(with_sv_tf_r), 'with_sv_tf'] = 1
+    return hop1, sub_hop1, sub_hop2, sub_hop3, with_sv_tf_r, sv_target_genes, sv_target_genes_index
+
+def process_cell(cell, unique_genes, norm_exp, sv_target_genes, with_sv_tf_r, hop1,
+                 sub_hop1, sub_hop2, sub_hop3,
+                  sv_target_genes_index, gene_name_map, pseudo_count=1e-10):
+    # build full exp for cell
+    exp = np.zeros(len(unique_genes))
+    for i, gene in enumerate(unique_genes):
+        if gene in norm_exp.columns:
+            exp[i] = norm_exp.loc[cell, gene]
+    exp[exp < pseudo_count] = pseudo_count # set pseudo count to exp
+
+    weighted_hop1 = hop1.multiply(exp).tocsr()
+    weighted_hop2 = (weighted_hop1.dot(hop1)).multiply(exp).tocsr()
+    weighted_hop3 = (weighted_hop2.dot(hop1)).multiply(exp).tocsr()
+
+    weighted_sub_hop1 = weighted_hop1[with_sv_tf_r, :][:, sv_target_genes_index].A / sub_hop1
+    weighted_sub_hop1[~np.isfinite(weighted_sub_hop1)] = 0
+    weighted_sub_hop2 = weighted_hop2[with_sv_tf_r, :][:, sv_target_genes_index].A / sub_hop2
+    weighted_sub_hop2[~np.isfinite(weighted_sub_hop2)] = 0
+    weighted_sub_hop2 = np.power(weighted_sub_hop2, 1/2)
+    weighted_sub_hop3 = weighted_hop3[with_sv_tf_r, :][:, sv_target_genes_index].A / sub_hop3
+    weighted_sub_hop3[~np.isfinite(weighted_sub_hop3)] = 0
+    weighted_sub_hop3 = np.power(weighted_sub_hop3, 1/3)
+    
+    weighted_sum_path_all_htop = np.nansum([weighted_sub_hop1, weighted_sub_hop2, weighted_sub_hop3], axis=0)
+    count_df = pd.DataFrame(weighted_sum_path_all_htop, columns=sv_target_genes)
+    count_df['receptor'] = [gene_name_map[x] for x in with_sv_tf_r]
+    count_df['cell'] = cell
+    return count_df
+
+def run_cells(norm_exp, unique_genes, sv_target_genes, with_sv_tf_r, hop1,
+              sub_hop1, sub_hop2, sub_hop3,
+               sv_target_genes_index, gene_name_map, n_jobs=-1):
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_cell)(cell, unique_genes, norm_exp, sv_target_genes, with_sv_tf_r, hop1,
+                              sub_hop1, sub_hop2, sub_hop3,
+                               sv_target_genes_index, gene_name_map)\
+            for cell in tqdm(norm_exp.index, desc="Processing cells")
+    )
+    major_df = pd.concat(results)
+    print('0227:1525')
+
+    return major_df
+
+def process_receptor(r, major_df, idata, keep_top_score=10):
+    receptor_df = major_df[major_df.receptor == r].set_index('receptor').reset_index(drop=True).set_index('cell')
+    receptor_df = receptor_df.loc[:, receptor_df.sum(axis=0) > 0]
+
+    lrs = idata.var_names[idata.var_names.str.split('_').str[1] == r].to_numpy().tolist()
+    corrs = []
+    sv_tf_scores = []
+    for lr in lrs:
+        j = np.argwhere(idata.var_names == lr)[0][0]
+        receivers = []
+        for i in range(len(idata)):
+            if idata.layers['direction'][i,j] == 1:
+                receivers.append(idata.obs.iloc[i]['B'])
+            else:
+                receivers.append(idata.obs.iloc[i]['A'])
+        sv_tf_score = receptor_df.loc[receivers].reset_index(drop=True)
+        # drop the columns that are all zeros
+        sv_tf_score = sv_tf_score[sv_tf_score.columns[sv_tf_score.sum()!=0]]
+        sv_tf_score.index = idata.obs_names
+        sv_tf_score[lr] = idata.to_df()[lr]
+        if sv_tf_score[sv_tf_score.columns[:-1]].max().max() == 0:
+            continue
+        
+        corr = sv_tf_score.corr(method='pearson')[lr][:-1] # the last row if the lr
+        # only keep the positive correlations
+        corr = corr[corr>0].sort_values(ascending=False)
+        corrs.append(corr)
+        
+        sv_tf_score = sv_tf_score.drop(lr, axis=1)[corr.index[:keep_top_score]]
+        sv_tf_score.columns = [f'{lr}-{c}' for c in sv_tf_score.columns]
+        sv_tf_scores.append(sv_tf_score)
+    corrs = pd.concat(corrs, axis=1)
+    sv_tf_scores = pd.concat(sv_tf_scores, axis=1)
+    return [corrs, sv_tf_scores]
+
+def run_receptors(major_df, idata, n_jobs=-1, keep_top_score=10):
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_receptor)(r, major_df, idata, keep_top_score) for r in tqdm(major_df.receptor.unique(), desc="Processing receptors")
+    )
+    corrs = [result[0] for result in results]
+    sv_tf_scores = [result[1] for result in results]
+    results_corrs = pd.concat(corrs, axis=1).T.astype(np.float16).replace(np.nan, 0)
+    results_tf_scores = pd.concat(sv_tf_scores, axis=1).replace(1e-10, 0)
+    return results_corrs, results_tf_scores
+
+
+# V1 code
 
 def abstract(idata, n_neighbors=10, alpha=0.3):
     # Method: Building abstract interfaces with self-organizing map
@@ -42,25 +299,48 @@ def som_mapping(som, idata, df):
 def meta_pattern_to_idata(idata, meta_idata):
     idata.obsm['pattern_score'] = meta_idata.obsm['pattern_score'][idata.obs['som_node'].to_numpy()]  
     idata.var = meta_idata.var
-    for i in np.array(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(meta_idata.uns.keys()))]:
+    for i in np.array(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(meta_idata.uns.keys()))]:
         idata.uns[i] = meta_idata.uns[i]
-        idata.uns[i+"_time"] = meta_idata.uns[i+"_time"]
+        try:
+            idata.uns[i+"_time"] = meta_idata.uns[i+"_time"]
+        except:
+            pass
     print(f'Added key pattern_score in idata.obsm and method results and running time in uns')   
-
-def find_svi(idata, out_f, overwrite, R_path, som=None, n_jobs=10):
+    
+def tf_pattern_to_idata(idata_raw, idata):
+    idata_raw.uns['tf_corr'] = idata.uns['tf_corr']
+    idata_raw.obsm['pattern_score'] = idata.obsm['pattern_score']
+    idata_raw.var['is_svi'] = 0
+    idata_raw.var.loc[idata.var_names, 'is_svi'] = idata.var['is_svi']
+    idata_raw.var['label'] = -1
+    idata_raw.var.loc[idata.var_names, 'label'] = idata.var['label']
+    corr_cols = [f'pattern_correlation_{x}' for x in range(idata_raw.obsm['pattern_score'].shape[1])]
+    idata_raw.var[corr_cols] = 0
+    idata_raw.var.loc[idata_raw[:,idata_raw.var['is_svi']==1].var_names,corr_cols] = idata.var[corr_cols]
+    for i in np.array(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(idata.uns.keys()))]:
+        idata_raw.uns[i] = idata.uns[i]
+        try:
+            idata_raw.uns[i+"_time"] = idata.uns[i+"_time"]
+        except:
+            pass
+        
+    
+def find_svi(idata, out_f, overwrite, R_path, som=None, n_jobs=10, skip_metric=False):
     # Method: Identifying spatially variable LR interactions
     # Gaussian models
     svi_nnSVG(idata,out_f,R_path,overwrite, n_jobs=n_jobs)
     svi_SOMDE(idata,out_f,overwrite, som=som, n_jobs=n_jobs)
     svi_SpatialDE2_omnibus(idata,out_f,overwrite, n_jobs=n_jobs)
     # svi_SpatialDE2(idata,out_f,overwrite)
+    svi_SpatialDE(idata,out_f,overwrite)    
     # Non-parametric covariance test
     svi_SPARKX(idata,out_f,R_path,overwrite, n_jobs=n_jobs)
     # HMRF
     svi_scGCO(idata,out_f,overwrite, n_jobs=n_jobs)
     # baseline auto-correlation metrics
-    svi_moran(idata,out_f,overwrite, n_jobs=n_jobs)
-    svi_geary(idata,out_f,overwrite, n_jobs=n_jobs)
+    if not skip_metric:
+        svi_moran(idata,out_f,overwrite, n_jobs=n_jobs)
+        svi_geary(idata,out_f,overwrite, n_jobs=n_jobs)
 
 def svi_moran(idata, work_dir, overwrite=False, n_jobs=10):
     try:
@@ -103,6 +383,7 @@ def svi_geary(idata, work_dir,overwrite=False, n_jobs=10):
         pass
 
 def svi_nnSVG(idata, work_dir, R_path, overwrite=False, n_jobs=10):
+    # overwrite = True
     try:
         count_f = f'{work_dir}idata_count.csv'
         meta_f = f'{work_dir}idata_meta.csv'
@@ -120,7 +401,7 @@ def svi_nnSVG(idata, work_dir, R_path, overwrite=False, n_jobs=10):
     except Exception as e:
         print(e)
     
-def scGCO_sv(locs, data_norm, cellGraph, gmmDict, smooth_factor=10, unary_scale_factor=100, label_cost=10, algorithm='expansion'):
+def scGCO_sv(locs, data_norm, cellGraph, gmmDict, smooth_factor=5, unary_scale_factor=100, label_cost=10, algorithm='expansion'):
     from itertools import repeat
     from functools import reduce
     import operator
@@ -143,8 +424,7 @@ def scGCO_sv(locs, data_norm, cellGraph, gmmDict, smooth_factor=10, unary_scale_
     model_labels = reduce(operator.add, mmm)
 
     best_p_values=[min(i) for i in p_values]
-    fdr = multi.multipletests(np.array(best_p_values), method='fdr_bh')[1]
-    #exp_fdr = multi.multipletests(np.array(exp_pvalues), method='fdr_bh')[1]    
+    fdr = multi.multipletests(np.array(best_p_values), method='fdr_bh')[1]   
     
     labels_array = np.array(pred_labels).reshape(len(genes), pred_labels[0].shape[0])
     data_array = np.array((genes, p_values, fdr,s_factors, nodes, model_labels), dtype=object).T
@@ -169,7 +449,7 @@ def scGCO_log1p(data):
     else:
         return data.log1p()
 
-def scGCO_normalize_count_cellranger(data,Log=True):
+def scGCO_normalize_count_cellranger(data,Log=True, norm=True):
     '''
     normalize count as in cellranger
     
@@ -192,17 +472,29 @@ def svi_scGCO(idata, work_dir, overwrite=False, n_jobs=10):
         import scGCO
         if (overwrite) | (not exists( f'{work_dir}scGCO.csv')):
             t0=time.time()
-            data_norm = scGCO_normalize_count_cellranger(idata.to_df())
-            exp= data_norm.iloc[:,0]
-            pos_key=['row', 'col']
-            locs = idata.obs[pos_key].to_numpy()
-            cellGraph= scGCO.create_graph_with_weight(locs, exp)
-            gmmDict= scGCO.gmm_model(data_norm)
-            result_df= scGCO_sv(locs, data_norm, cellGraph,gmmDict)
-            scGCO.write_result_to_csv(result_df, f'{work_dir}scGCO.csv')
+            result_dfs = []
+            for smooth_factor in [1, 5, 10, 20]:
+                for unary_scale_factor in [50, 100]:
+                    if (overwrite) | (not exists(f'{work_dir}scGCO_{smooth_factor}_{unary_scale_factor}.csv')):
+                        data_norm = idata.to_df()
+                        data_norm = scGCO_log1p(data_norm)
+                        exp = data_norm.mean(axis=1)
+                        pos_key=['row', 'col']
+                        locs = idata.obs[pos_key].to_numpy()
+                        cellGraph= scGCO.create_graph_with_weight(locs, exp)
+                        gmmDict= scGCO.gmm_model(data_norm)
+                        result_df= scGCO_sv(locs, data_norm, cellGraph, gmmDict, 
+                            smooth_factor = smooth_factor, unary_scale_factor=unary_scale_factor)
+                        result_df.to_csv(f'{work_dir}scGCO_{smooth_factor}_{unary_scale_factor}.csv')
+                        result_dfs.append(result_df)
+                    else:
+                        result_df = pd.read_csv(f'{work_dir}scGCO_{smooth_factor}_{unary_scale_factor}.csv', index_col=0)
+                        result_dfs.append(result_df)
+            result_dfs = pd.concat(result_dfs)
+            scGCO.write_result_to_csv(result_dfs, f'{work_dir}scGCO.csv')
             idata.uns['scGCO_time'] = time.time()-t0
-        result = pd.read_csv(f'{work_dir}scGCO.csv')
-        idata.uns['scGCO'] = result[result.columns[:6]]
+        result = pd.read_csv(f'{work_dir}scGCO.csv').groupby('Unnamed: 0')['fdr'].min().reset_index()
+        idata.uns['scGCO'] = result
         print(f'Added key scGCO in idata.uns')
     except:
         pass
@@ -217,6 +509,7 @@ def svi_SPARKX(idata, work_dir, R_path, overwrite=False, n_jobs=10):
         if (overwrite) | (not exists( f'{work_dir}SPARKX.csv')):
             t0=time.time()
             with resources.path("spider.R_script", "run_SPARKX.R") as pw_fn:
+                pw_fn = '/home/lishiying/data6/SPIDER-paper/spider_st/R_script/run_SPARKX.R'
                 os.system(str(f'/bin/bash -c "{R_path} -f {pw_fn} {count_f} {meta_f} {work_dir} {n_jobs}"'))
             idata.uns['SPARKX_time'] = time.time()-t0
         result = pd.read_csv(f'{work_dir}SPARKX.csv', index_col=0)
@@ -244,14 +537,43 @@ def svi_SpatialDE2(idata, work_dir, overwrite=False, n_jobs=10):
     
 def svi_SpatialDE2_omnibus(idata, work_dir, overwrite=False, n_jobs=10):
     try:
-        if (overwrite) | (not exists(f'{work_dir}SpatialDE_omnibus.csv')):
+        if (overwrite) | (not exists(f'{work_dir}SpatialDE2_omnibus.csv')):
             from spider import SpatialDE2
             t0=time.time()
+            np.random.seed(20230617)
             svg_full, _ = SpatialDE2.test(idata, omnibus=True)
             svg_full = svg_full.set_index('gene')
-            svg_full.to_csv(f'{work_dir}SpatialDE_omnibus.csv')
+            svg_full.to_csv(f'{work_dir}SpatialDE2_omnibus.csv')
+            idata.uns['SpatialDE2_time'] = time.time()-t0
+        result = pd.read_csv(f'{work_dir}SpatialDE2_omnibus.csv', index_col=0)
+        idata.uns['SpatialDE2'] = result
+        print(f'Added key SpatialDE2 in idata.uns')
+    except Exception as e:
+        print(e)
+        pass 
+    
+def svi_SpatialDE(idata, work_dir, overwrite=False, normalized=True):
+    try:
+        if (overwrite) | (not exists(f'{work_dir}SpatialDE.csv')):
+            import NaiveDE
+            import SpatialDE
+            t0=time.time()
+            counts = idata.to_df()
+            sample_info = idata.obs[['row', 'col']]
+            sample_info.columns = ['x', 'y']
+            sample_info['total_counts'] = counts.sum(axis=1)
+            if normalized:
+                resid_expr = counts
+            else:
+                counts = counts[sample_info['total_counts'] > 1]
+                sample_info = sample_info[sample_info['total_counts'] >1]
+                norm_expr = NaiveDE.stabilize(counts.T).T
+                resid_expr = NaiveDE.regress_out(sample_info, norm_expr.T, 'np.log(total_counts)').T
+            X = sample_info[['x', 'y']]
+            results = SpatialDE.run(X, resid_expr)
             idata.uns['SpatialDE_time'] = time.time()-t0
-        result = pd.read_csv(f'{work_dir}SpatialDE_omnibus.csv', index_col=0)
+            results.to_csv(f'{work_dir}SpatialDE.csv')
+        result = pd.read_csv(f'{work_dir}SpatialDE.csv', index_col=0)
         idata.uns['SpatialDE'] = result
         print(f'Added key SpatialDE in idata.uns')
     except Exception as e:
@@ -268,14 +590,20 @@ def svi_SOMDE(idata, work_dir, overwrite=False, som=None, n_jobs=10):
                 corinfo = idata.obs
                 corinfo["total_count"]=df.sum(0)
                 X=corinfo[['row','col']].values.astype(np.float32)
-                som = SomNode(X,10)
+                if len(df) < 1000:
+                    som = SomNode(X,4)
+                else:
+                    som = SomNode(X,10)
                 ndf,ninfo = som.mtx(df)
             # nres = som.norm()
             from scipy import optimize
             from somde import regress_out
             phi_hat, _ = optimize.curve_fit(lambda mu, phi: mu + phi * mu ** 2, som.ndf.mean(1), som.ndf.var(1))
             dfm = np.log(som.ndf + 1. / (2 * np.abs(phi_hat[0])))
-            som.nres = regress_out(som.ninfo, dfm, 'np.log(total_count)').T
+            try:
+                som.nres = regress_out(som.ninfo, dfm, 'np.log(total_count)').T
+            except:
+                som.nres = dfm.T
             result, SVnum =som.run()
             result.to_csv(f'{work_dir}SOMDE.csv')
             idata.uns['SOMDE_time'] = time.time()-t0
@@ -293,17 +621,30 @@ def combine_SVI(idata, threshold, svi_number=10):
     if len(svi_df_strict) <= svi_number:
         print(f'Detected SVI number is less than {svi_number}, falling back to use SOMDE result only.')
         svi_df, svi_df_strict  = combine_SVI_somde(idata,threshold=threshold)
+    org_len = len(svi_df_strict)
+    if 'tf_support_count' in idata.var.columns:
+        svi_df_strict = svi_df_strict[idata.var['tf_support_count'].loc[svi_df_strict.index] != 0]
+        print(f'Excluding {org_len-len(svi_df_strict)} genes without TF support')
+        print(f'{len(svi_df_strict)}/{len(svi_df)} tf-supported SVIs identified.')
+    else:
+        print('TF corr not previously calculated, falling back to sv pattern only')
+        print(f'{len(svi_df_strict)}/{len(svi_df)} SVIs identified.')
+    idata.var['is_svi'] = 0
+    idata.var.loc[svi_df_strict.index, 'is_svi'] = 1
     return svi_df, svi_df_strict
 
 def combine_SVI_Fisher(idata, threshold=0.05):
     from scipy.stats import combine_pvalues
-    methods = np.array(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(idata.uns.keys()))]
+    methods = np.array(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(idata.uns.keys()))]
+    print(f'Using the results from SVI identification methods: {methods}')
     df = []
     for i in methods:
         if i == 'SOMDE':
             df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
-        elif i == 'SpatialDE':
+        elif i == 'SpatialDE2':
             df.append(idata.uns[i][['padj']].rename(columns = {'padj': i}))
+        elif i == 'SpatialDE':
+            df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
         elif i == 'SPARKX':
             df.append(idata.uns[i][['adjustedPval']].rename(columns = {'adjustedPval': i}))
         elif i == 'nnSVG':
@@ -317,21 +658,50 @@ def combine_SVI_Fisher(idata, threshold=0.05):
     df_sub = df[df['adj_pvalue']<threshold]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
     idata.uns['svi'] = df
-    idata.var['is_svi'] = 0
-    idata.var.loc[df_sub.index, 'is_svi'] = 1
     return df, df_sub
 
-def combine_SVI_strict(idata, threshold=0.01):
-    methods = np.array(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(idata.uns.keys()))]
+def combine_SVI_Stouffer(idata, threshold=0.05):
+    from scipy.stats import combine_pvalues
+    methods = np.array(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(idata.uns.keys()))]
     print(f'Using the results from SVI identification methods: {methods}')
     df = []
     for i in methods:
         if i == 'SOMDE':
             df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
-        elif i == 'SpatialDE':
+        elif i == 'SpatialDE2':
             df.append(idata.uns[i][['padj']].rename(columns = {'padj': i}))
+        elif i == 'SpatialDE':
+            df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
         elif i == 'SPARKX':
             df.append(idata.uns[i][['adjustedPval']].rename(columns = {'adjustedPval': i}))
+        elif i == 'nnSVG':
+            df.append(idata.uns[i][['padj']].rename(columns = {'padj': i}))
+        elif i == 'scGCO':
+            df.append(idata.uns[i].set_index(idata.uns['scGCO'].columns[0])[['fdr']].rename(columns = {'fdr': i}))
+    df = pd.concat(df, axis=1).fillna(1)
+    
+    arr = [combine_pvalues(x, method='stouffer')[1] for x in df.to_numpy()]
+    df['adj_pvalue'] = arr
+    df_sub = df[df['adj_pvalue']<threshold]
+    print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
+    idata.uns['svi'] = df
+    return df, df_sub
+
+def combine_SVI_strict(idata, threshold=0.01):
+    methods = np.array(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'])[np.isin(['SOMDE', 'SpatialDE', 'SpatialDE2', 'SPARKX', 'nnSVG', 'scGCO', 'gearyC', 'moranI'],list(idata.uns.keys()))]
+    print(f'Using the results from SVI identification methods: {methods}')
+    df = []
+    for i in methods:
+        if i == 'SOMDE':
+            df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
+        elif i == 'SpatialDE2':
+            df.append(idata.uns[i][['padj']].rename(columns = {'padj': i}))
+        elif i == 'SpatialDE':
+            df.append(idata.uns[i].set_index('g')[['qval']].rename(columns = {'qval': i}))
+        elif i == 'SPARKX':
+            df.append(idata.uns[i][['adjustedPval']].rename(columns = {'adjustedPval': i}))
+        # elif i == 'SPARKX':
+        #     df.append(idata.uns[i].set_index('rn')[['fdr']].rename(columns = {'fdr': i}))
         elif i == 'nnSVG':
             df.append(idata.uns[i][['padj']].rename(columns = {'padj': i}))
         elif i == 'scGCO':
@@ -340,9 +710,6 @@ def combine_SVI_strict(idata, threshold=0.01):
     df_sub = df[(df<threshold).all(axis=1)]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
     idata.uns['svi'] = df
-    idata.var['is_svi'] = 0
-    df_sub = df_sub.loc[np.intersect1d(df_sub.index, idata.var_names)]
-    idata.var.loc[df_sub.index, 'is_svi'] = 1
     return df, df_sub
 
 def combine_SVI_somde(idata, threshold=0.01):
@@ -351,11 +718,9 @@ def combine_SVI_somde(idata, threshold=0.01):
     df_sub = df[(df<threshold).all(axis=1)]
     print(f'{len(df_sub)}/{len(df)} SVIs identified (threshold={threshold}).')
     idata.uns['svi'] = df
-    idata.var['is_svi'] = 0
-    idata.var.loc[df_sub.index, 'is_svi'] = 1
     return df, df_sub
     
-def eva_SVI(idata, svi_df_strict):
+def eva_SVI_notf(idata, svi_df_strict):
     import seaborn as sns
     from statannotations.Annotator import Annotator
     methods = np.array(['moranI', 'gearyC', 'SOMDE', 'nnSVG'])[np.isin(['SOMDE', 'nnSVG', 'gearyC', 'moranI'],list(idata.uns.keys()))]
@@ -388,7 +753,7 @@ def eva_SVI(idata, svi_df_strict):
     normalized_df = normalized_df.melt(id_vars='Category', value_vars=metrics, var_name='Metric')
     normalized_df = normalized_df.sort_values('Category')
     if normalized_df['Category'].nunique()!=1:
-        ax =sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3','Excluded': '#fb8072'}, width=0.8, hue_order=['SVI', 'Excluded'])
+        ax = sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3','Excluded': '#fb8072'}, width=0.8, hue_order=['SVI', 'Excluded'])
         pairs = []
         for i in metrics:
             pairs.append( ((i, 'SVI'), (i, 'Excluded')))
@@ -403,29 +768,91 @@ def eva_SVI(idata, svi_df_strict):
 
     ax.set_ylabel('')    
     ax.set_xlabel('')
+
+def eva_SVI(idata, svi_df_strict):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from statannotations.Annotator import Annotator
+    methods = np.array(['moranI', 'gearyC', 'SOMDE', 'nnSVG'])[np.isin(['moranI', 'gearyC', 'SOMDE', 'nnSVG'],list(idata.uns.keys()))]
+    print(f'evaluating with {methods}')
+    dfs = []
+    metrics = []
+    for i in methods:
+        if i == 'gearyC':
+            dfs.append(-idata.uns['gearyC'][['C']])
+            metrics.append("Geary\nC (rev.)")
+        elif i == 'moranI':
+            dfs.append(idata.uns['moranI'][['I']]),
+            metrics.append("Moran\nI")
+        elif i == 'SOMDE':
+            dfs.append(idata.uns['SOMDE'].set_index('g')['FSV']),
+            metrics.append("FSV\n(SOMDE)") 
+            dfs.append(idata.uns['SOMDE'].set_index('g')['LLR']),
+            metrics.append("LR\n(SOMDE)") 
+        elif i == 'nnSVG':
+            dfs.append(idata.uns['nnSVG']['LR_stat']),
+            metrics.append("LR\n(nnSVG)") 
+            
+    dfs.append(idata.uns['tf_corr'].max(axis=1))
+    metrics.append('TF corr')
+
+    df = pd.concat(dfs, axis=1)
+    df.columns=metrics
+
+    normalized_df=(df-df.min())/(df.max()-df.min())
+    normalized_df['Category'] = 'Excluded'
+    normalized_df.loc[svi_df_strict.index, 'Category'] = 'SVI'
+    normalized_df = normalized_df.melt(id_vars='Category', value_vars=metrics, var_name='Metric').dropna()
+    plt.figure(figsize=(6, 4))
+    plt.rc('font', size=12)
+    if normalized_df['Category'].nunique()!=1:
+        ax = sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#F7994A','Excluded': '#7F46C0'}, width=0.8, hue_order=['SVI', 'Excluded'])
+        # ax = sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3','Excluded': '#fb8072'}, width=0.8, hue_order=['SVI', 'Excluded'])
+        pairs = []
+        for i in metrics:
+            pairs.append( ((i, 'SVI'), (i, 'Excluded')))
+        annot = Annotator(ax, pairs, data=normalized_df, x='Metric',y='value', hue='Category', hue_order=['SVI', 'Excluded'])
+        annot.configure(test='Mann-Whitney-gt',comparisons_correction="BH", correction_format="replace")
+        annot.apply_test()
+        annot.annotate()
+    else:
+        ax =sns.boxplot(data=normalized_df,x='Metric',y='value', hue='Category', palette={'SVI':'#80b1d3'}, width=0.8, hue_order=['SVI'])
+        
+    ax.legend(loc='upper center',ncol=2, bbox_to_anchor=(0.5, 1.15), frameon=False)
+
+    ax.set_ylabel('')    
+    ax.set_xlabel('')
+    return normalized_df
         
 def eva_pattern(idata):
+    import matplotlib.pyplot as plt
     import seaborn as sns
     from statannotations.Annotator import Annotator
-    
     dfs = []
     pairs = []
+    dummy_df = pd.get_dummies(idata.var['label'])
+    dummy_df = pd.concat([idata.var[[f'pattern_correlation_{i}' for i in range(idata.obsm['pattern_score'].shape[1])]+['is_svi']], dummy_df], axis=1)
+    dummy_df = dummy_df[dummy_df['is_svi'] == 1]
     for i in range(idata.obsm['pattern_score'].shape[1]):
-        subdf = idata.var[[f'pattern_membership_{i}', f'pattern_correlation_{i}']]
+        subdf = dummy_df[[i, f'pattern_correlation_{i}']]
         subdf.columns = ['membership', 'correlation']
         subdf['pattern'] = i
         dfs.append(subdf)
         pairs.append(((i, 'member'), (i, 'non-member')))
     maindf = pd.concat(dfs)
     maindf = maindf.sort_values('membership')
-    maindf['membership'] = maindf['membership'].replace(0, 'non-member').replace(1, 'member')
+    maindf['membership'] = maindf['membership'].replace(0, 'non-member')
+    maindf.loc[maindf['membership']!='non-member', 'membership'] = 'member'
     ax=sns.boxplot(data=maindf, x='pattern', y='correlation', hue='membership', hue_order=['member', 'non-member'],
-                   palette={'member':'#80b1d3','non-member': '#fb8072'}, width=0.8)
-    ax.legend(loc='upper center',ncol=2, bbox_to_anchor=(0.5, 1.1), frameon=False)
+                   palette={'member':'#F7994A','non-member': '#7F46C0'}, width=0.8)
+    ax.legend(loc='upper center',ncol=2, bbox_to_anchor=(0.5, 1.15), frameon=False)
     annot = Annotator(ax, pairs, data=maindf, x='pattern',y='correlation', hue='membership')
-    annot.configure(test='Mann-Whitney-ls',comparisons_correction="BH", correction_format="replace")
+    annot.configure(test='Mann-Whitney-ls',comparisons_correction="BH", correction_format="replace", fontsize=13)
     annot.apply_test()
     annot.annotate()
+    plt.xlabel('SPIDER SVI patterns', fontsize=12)
+    plt.title('SPIDER SVI pattern evaluation', y=1.1, fontsize=12)
+    plt.ylabel('LRI-pattern correlations', fontsize=12)
     
 class dotdict(dict):
     """dot.notation access to dictionary attributes"""
@@ -449,10 +876,58 @@ def SVI_patterns(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-6, 
     if ((upper_patterns.patterns.shape[1] < 3) | (len(np.unique(upper_patterns.patterns)) == 1)) :
         param_obj = SpatialDE2.SpatialPatternParameters(maxiter=iter, pattern_prune_threshold=pattern_prune_threshold, nclasses=5)
         upper_patterns, _ = SpatialDE2.spatial_patterns(idata, normalized=True, genes=allsignifgenes, rng=np.random.default_rng(seed=45), params=param_obj, copy=False)
+    # drop empty patterns
+    labels, patterns, prob = upper_patterns.labels, upper_patterns.patterns, upper_patterns.pattern_probabilities
+    uni_labels = np.sort(np.unique(labels))
+    value_counts = np.array([np.sum(labels == i) for i in uni_labels])
+    drop_labels = []
+    for i in range(patterns.shape[1]):
+        if len(np.unique(patterns[:, i])) == 1:
+            uni_labels = np.delete(uni_labels, np.where(uni_labels == i))
+            drop_labels.append(i)
+    for i in uni_labels:
+        if i >= patterns.shape[1]:
+            drop_labels.append(i)
+            uni_labels = np.delete(uni_labels, np.where(uni_labels == i))
+    new_label_map = dict(zip(uni_labels, range(len(uni_labels))))
+    for i in drop_labels:
+        new_label_map[i] = -1
+    print(new_label_map)
+    patterns = patterns[:, uni_labels]
+    prob = prob[:, uni_labels]
+    new_labels = np.array([new_label_map[l] for l in labels])
+    print(new_labels)
+    upper_patterns = dotdict({
+        'labels': new_labels,
+        'patterns': patterns,
+        'pattern_probabilities': prob
+    })
+    value_counts = np.array([np.sum(new_labels == i) for i in np.unique(new_labels)])
+    print(value_counts)
+    if ((upper_patterns.patterns.shape[1] < 3) | (len(np.unique(upper_patterns.patterns)) == 1)) :
+        print(f'using controlled pattern')
+        if predefined_pattern_number == -1:
+            predefined_pattern_number = 10
+        histology_results, patterns, prob = SVI_patterns_v1(idata, svi_df_strict, components=predefined_pattern_number)
+        patterns = patterns.to_numpy()
+        labels = histology_results['pattern'].to_numpy()
+        uni_labels = np.sort(np.unique(labels))
+        patterns = patterns[:, uni_labels]
+        prob = prob[:, uni_labels]
+        new_label_map = dict(zip(uni_labels, range(len(uni_labels))))
+        new_labels = np.array([new_label_map[l] for l in labels])
+        histology_results['pattern'] = new_labels
+        upper_patterns = dotdict({
+            'labels': histology_results['pattern'].to_numpy(),
+            'patterns': patterns,
+            'pattern_probabilities': prob
+        })
+    
     print(f'eventually found {upper_patterns.patterns.shape[1]} patterns')
     idata.var['label'] = -1
     if len(upper_patterns.labels) !=  len(allsignifgenes):
         allsignifgenes = svi_df_strict.index.to_numpy()
+    print(upper_patterns.labels)
     idata.var.loc[allsignifgenes, 'label'] = upper_patterns.labels
     idata.var[[f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = 0
     idata.var.loc[allsignifgenes, [f'pattern_membership_{x}' for x in range(upper_patterns.pattern_probabilities.shape[1])]] = upper_patterns.pattern_probabilities
@@ -499,7 +974,6 @@ def SVI_patterns_v2(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-
                 'pattern_probabilities': prob
             })
             pattern_number = patterns.shape[1]
-            histology_results['pattern'].to_csv('/home/lishiying/data6/01-interaction/results/DFPFC_paper/151673/patttern.csv')
             break
     print(f'eventually found {pattern_number} patterns')
     idata.var['label'] = -1
@@ -517,6 +991,8 @@ def SVI_patterns_v2(idata, svi_df_strict, iter=1000, pattern_prune_threshold=1e-
 def SVI_patterns_v1(idata, svi_df_strict, components=5):
     import NaiveDE
     import SpatialDE
+    np.random.seed(20230617)
+    
     df = idata.to_df().T.loc[svi_df_strict.index]
     corinfo = idata.obs
     corinfo["total_counts"]=df.sum(0)

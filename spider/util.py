@@ -1,4 +1,6 @@
 import pandas as pd
+import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 def relabel_interface(idata, clust_key):
     node_labels_text = idata.uns['cell_meta'][clust_key]
@@ -76,13 +78,12 @@ def get_marker_df(idata, logfoldchanges_threhold=1):
 
 def save_runningtime(idata, save=''):
     obj = {}
-    obj['nnSVG_time'] = idata.uns['nnSVG_time']
-    obj['SOMDE_time'] = idata.uns['SOMDE_time']
-    obj['SpatialDE_time'] = idata.uns['SpatialDE_time']
-    obj['SPARKX_time'] = idata.uns['SPARKX_time']
-    obj['scGCO_time'] = idata.uns['scGCO_time']
-    obj['moranI_time'] = idata.uns['moranI_time']
-    obj['gearyC_time'] = idata.uns['gearyC_time']
+    keys = ['scanpy_time', 'nnSVG_time', 'SOMDE_time', 'SpatialDE_time', 'SPARKX_time', 'scGCO_time', 'moranI_time', 'gearyC_time']
+    for key in keys:
+        try:
+            obj[key] = idata.uns[key]
+        except:
+            obj[key] = None
     obj['interface'] = idata.shape[0]
     obj['LRI'] = idata.shape[1]
     if save != '':
@@ -90,3 +91,52 @@ def save_runningtime(idata, save=''):
         with open(save, 'w') as f:
             json.dump(obj, f)
     return obj
+
+def compare_var(idata, idata_old):
+    val1, count1 = np.unique(idata_old.obs[['A', 'B']].to_numpy().flatten(), return_counts=True)
+    val2, count2 = np.unique(idata.obs[['A', 'B']].to_numpy().flatten(), return_counts=True)
+    df1 = pd.DataFrame({'val': val1, 'n_interface_v1': count1}).set_index('val')
+    df2 = pd.DataFrame({'val': val2, 'n_interface_v2': count2}).set_index('val')
+    n_interface = df2.join(df1).fillna(0)
+    n_interface['ideal_n_interface'] = idata.uns['cell_meta'].loc[n_interface.index, 'ideal_n_interface']
+    y_true = n_interface['ideal_n_interface'].to_numpy()
+    y_pred_v1 = n_interface['n_interface_v1'].to_numpy()
+    y_pred_v2 = n_interface['n_interface_v2'].to_numpy()
+    mae_v1 = mean_absolute_error(y_true, y_pred_v1)
+    mae_v2 = mean_absolute_error(y_true, y_pred_v2)
+    mse_v1 = mean_squared_error(y_true, y_pred_v1)
+    mse_v2 = mean_squared_error(y_true, y_pred_v2) 
+    r2_v1 = r2_score(y_true, y_pred_v1)  
+    r2_v2 = r2_score(y_true, y_pred_v2)
+    print(f'v1: MAE={mae_v1}, MSE={mse_v1}, R2={r2_v1}')
+    print(f'v2: MAE={mae_v2}, MSE={mse_v2}, R2={r2_v2}')
+    return n_interface, mae_v1, mae_v2, mse_v1, mse_v2, r2_v1, r2_v2, y_true, y_pred_v1, y_pred_v2
+
+def compare_local_var(idata, idata_old):
+    from scipy.spatial import KDTree
+    
+    if len(idata) != len(idata_old):
+        import anndata
+        missing_cell = [x for x in idata.obs_names if x not in idata_old.obs_names ]
+        idata_coexp_df = idata_old.to_df().T
+        idata_coexp_df['missing_cell'] = 0
+        idata_old = anndata.AnnData(idata_coexp_df.T)
+    
+    points = idata.obsm['spatial']
+    tree = KDTree(points)
+    arr = []
+    for k in [5, 10, 20, 50]:
+        _, indices = tree.query(points, k=k)
+        for var_names in range(idata.shape[1]):
+            values = idata.X[:, var_names]
+            differences = np.abs(values[:, np.newaxis] - values[indices[:, 1:]])
+            mean_differences = np.mean(differences, axis=1)
+            mean = np.mean(mean_differences)
+            arr.append([k, 'Optimal Transport', mean])
+
+            values = idata_old.X[:, var_names]
+            differences = np.abs(values[:, np.newaxis] - values[indices[:, 1:]])
+            mean_differences = np.mean(differences, axis=1)
+            mean = np.mean(mean_differences)
+            arr.append([k, 'Co-expression', mean])
+    return pd.DataFrame(arr, columns=['n_neighbor', 'formulation', 'diff'])

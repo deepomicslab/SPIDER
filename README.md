@@ -1,6 +1,6 @@
 # SPIDER: SPtial Interaction-encoDed intErface decipheR
 
-SPIDER constructs cell-cell interaction interfaces with minimized Dirichlet energy, models interface profiles with knowledge-graph-informed interaction signals, and identifies spatially variable signals with multiple probabilistic models.
+Spatial transcriptomics has emerged as a groundbreaking tool to study ligand-receptor interactions between cells, and these interactions exhibit spatial variability. To identify spatially variable ligand-receptor interactions with activation evidence, we present SPIDER, which constructs cell-cell interaction interfaces constrained by cellular interaction capacity, and profiles and identifies spatially variable interaction signals with support from downstream transcript factors and multiple probabilistic models. SPIDER exhibited consistent performance over seven datasets from four platforms of various tissues. 
 
 ## 
 > [!IMPORTANT]  
@@ -45,8 +45,6 @@ BiocManager::install("nnSVG")
 
 install.packages('devtools')
 devtools::install_github('xzhoulab/SPARK')
-devtools::install_github('linxihui/NNLM')
-devtools::install_github('ZJUFanLab/SpaTalk')
 ```
 
 You also need to provide the executive R path in your enviroment, you can normally obtain this by checking the output of
@@ -65,13 +63,16 @@ import spider
 op=spider.SPIDER()
 
 # interface consutrction
-idata = op.prep(adata, out_f,  R_path, cluster_key='region', is_human=True, coord_type='grid')
+idata = op.prep(adata, cluster_key=adata.uns['cluster_key'], is_human=adata.uns['is_human'], is_sc=adata.uns['is_sc'], itermax=1000, imputation=True, normalize_total=True)
+
+# TF scoring
+op.svi.tf_corr(idata, adata, adata.uns['is_human'], out_f, threshold=0.3)
 
 # running SVI tests
-idata, abstract_idata = op.find_svi(idata, out_f,  R_path, alpha=0.3, no_spatalk=True, imputation=False)
+idata, meta_idata = op.find_svi(idata, out_f, R_path, alpha=0.3, overwrite=True, n_jobs=1, svi_number=0)
 
 # visualize SVI
-op.vis.pattern_LRI(idata,show_SVI=10)
+op.vis.pattern_LRI(idata,show_SVI=10, spot_size=10)
 ```
 
 Outputs:
@@ -99,17 +100,6 @@ Outputs:
 
 ![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/demo_pattern_eva.png)
 
-<!-- ```python
-# transform SVI pattern from interfaces to spots
-op.svi.idata_pattern_to_spot(idata)
-
-# SVI-based spot clustering
-op.cl.unsupervised_spot_clust(idata, adata, n_cluster=7)
-```
-
-Outputs:
-
-![Metrics](https://github.com/deepomicslab/SPIDER/raw/main/demo/PDAC_boundary.png) -->
 
 Check the correlations between SVIs and deconvoluted celltypes:
 
