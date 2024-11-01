@@ -4,7 +4,7 @@ Spatial transcriptomics has emerged as a groundbreaking tool to study ligand-rec
 
 ## 
 > [!IMPORTANT]  
-> Try SPIDER on CodeOcean at **[Capsule 3209985](https://codeocean.com/capsule/3209985/tree)** now - no installation required!
+> Try SPIDER on CodeOcean at **[Capsule 1194038](https://codeocean.com/capsule/1194038/tree/v1)** now - no installation required!
 
 ## Install
 First, creast a conda enviroment with python=3.8
