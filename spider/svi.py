@@ -15,6 +15,64 @@ from tqdm import tqdm
 
 
 def tf_corr(idata, adata, is_human, out_f, threshold=0.3, n_jobs=20, overwrite=False, step=None, pathways=[], keep_top_score=None, smooth=False):
+    """
+    Compute transcription factor correlations with ligand-receptor interactions.
+
+    This function analyzes the given interface data and evaluates the correlations
+    between each interaction profile and their target genes, saving the results to 
+    specified output files.
+
+    Parameters
+    ----------
+    idata : AnnData
+        Input AnnData object containing interface data.
+        
+    adata : AnnData
+        Input AnnData object containing count data.
+        
+    is_human : bool
+        Indicator for whether the data pertains to human genes.
+        
+    out_f : str
+        Output directory path where results will be saved.
+        
+    threshold : float, optional
+        Minimum correlation coefficient threshold for calling TF support (default is 0.3).
+        
+    n_jobs : int, optional
+        Number of parallel jobs to run during processing (default is 20).
+        
+    overwrite : bool, optional
+        If True, existing output files will be overwritten (default is False).
+        
+    step : float, optional
+        The step size for adjusting the threshold during the iterative process (default is None).
+        
+    pathways : list, optional
+        A list of pathways to analyze; if empty, pathways will be loaded based on the input data.
+        
+    keep_top_score : int, optional
+        The number of top scoring interactions to retain (default is None).
+        
+    smooth : bool, optional
+        If True, applies smoothing to the expression data (default is False).
+
+    Returns
+    -------
+    None
+        The function saves results directly to the specified output files and updates 
+        the `idata` object with correlation and score data.
+
+    Notes
+    -----
+    - The function checks if the output directory exists and creates it if it does not.
+    - If smoothing is enabled, it applies a kernel smoothing method based on spatial data.
+    - Results are saved in sparse matrix format and CSV files for easy access and further analysis.
+
+    Examples
+    --------
+    >>> tf_corr(idata, adata, adata.uns['is_human'], 'output_directory/', threshold=0.3, n_jobs=30, overwrite=True, step=None, keep_top_score=5)
+    """
     lr_df = idata.var[['ligand', 'receptor']]
     if len(pathways) == 0:
         pathways = subset_pathway_df(load_pathway_df(is_human), lr_df, adata)
@@ -614,6 +672,45 @@ def svi_SOMDE(idata, work_dir, overwrite=False, som=None, n_jobs=10):
         pass
     
 def combine_SVI(idata, threshold, svi_number=10):
+    """
+    Combine SVIs based on both SV candidates and TF support.
+
+    This function attempts to identify SVIs from the 
+    given input data. It first uses strict filtering, then falls back to relaxed filtering 
+    or SOMDE results if the detected number of SVIs is below a specified threshold.
+
+    Parameters
+    ----------
+    idata : AnnData
+        Input AnnData object containing interaction data.
+
+    threshold : float
+        Threshold value for filtering SVI candidates based on significance.
+
+    svi_number : int, optional
+        The mimimum number of SVIs to identify (default is 10). The function will 
+        attempt to ensure that at least this many SVIs are returned.
+
+    Returns
+    -------
+    svi_df : DataFrame
+        DataFrame containing results of all LRIs.
+
+    svi_df_strict : DataFrame
+        DataFrame containing strictly filtered SVIs based on the provided threshold and TF support.
+
+    Notes
+    -----
+    - The function checks the number of detected SVIs and applies different filtering 
+      strategies if the count is less than `svi_number`.
+    - If TF support counts are available, genes without TF support are excluded from 
+      the strict SVI results.
+    - Updates the `is_svi` column in `idata.var` to indicate which genes are identified as SVIs.
+
+    Examples
+    --------
+    >>> svi_df, svi_df_strict = combine_SVI(idata, threshold=0.05, svi_number=10)
+    """
     svi_df, svi_df_strict = combine_SVI_strict(idata,threshold=threshold)
     if len(svi_df_strict) <= svi_number:
         print(f'Detected SVI number is less than {svi_number}, falling back to relaxed filtering.')

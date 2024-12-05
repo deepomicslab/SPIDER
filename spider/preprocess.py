@@ -22,6 +22,51 @@ def impute_MAGIC(adata):
 
 # idata
 def idata_construct(score, direction, pairs_meta, lr_df, lr_raw, pathway_df, adata, drop=True, normalize_total=False):
+    """
+    Constructs an AnnData object for interface profiles from input data.
+
+    This function takes scores and metadata to create an AnnData object, 
+    setting various attributes and performing quality checks on the data.
+
+    Parameters
+    ----------
+    score : np.ndarray
+        A 2D array of scores representing the interaction strengths between ligand-receptor pairs.
+    direction : np.ndarray
+        A 2D array indicating the direction of interactions for the respective scores.
+    pairs_meta : pd.DataFrame
+        A DataFrame containing metadata for ligand-receptor pairs, which should include relevant identifiers.
+    lr_df : pd.DataFrame
+        A DataFrame containing ligand-receptor information, with indices corresponding to ligand-receptor pairs.
+    lr_raw : pd.DataFrame
+        Raw metadata for ligand-receptor pairs, used for further analysis and storage in the output AnnData object.
+    pathway_df : pd.DataFrame
+        A DataFrame containing pathway information that describes interactions between transcription factors and genes.
+    adata : AnnData
+        The original AnnData object containing the input data for the analysis.
+    drop : bool, optional
+        If True, drops cells that do not have any expressed genes (default is True).
+    normalize_total : bool, optional
+        If True, normalizes the total counts of interactions in the AnnData object (default is False).
+
+    Returns
+    -------
+    idata : AnnData
+        The constructed AnnData object containing the following:
+        - Scores and directions as layers.
+        - Metadata and quality metrics for interfaces.
+        - Spatial coordinates if available.
+
+    Notes
+    -----
+    - The function performs quality checks on the data, filtering genes and cells based on specified criteria.
+    - It normalizes total interaction strengths per interface if the `normalize_total` flag is set to True.
+    - The function constructs the output AnnData object (`idata`) with appropriate metadata for downstream analysis.
+
+    Examples
+    --------
+    >>> idata = idata_construct(score_array, direction_array, pairs_meta_df, lr_df, lr_raw_df, pathway_df, adata)
+    """
     idata = anndata.AnnData(score)
     idata.layers['direction'] = direction
     idata.obs_names = pairs_meta.index
@@ -41,9 +86,8 @@ def idata_construct(score, direction, pairs_meta, lr_df, lr_raw, pathway_df, ada
     if drop:
         sc.pp.filter_cells(idata, min_genes=1)
     if normalize_total:
-        sc.pp.normalize_total(idata)
-        print('Normalizing total interaction strength per interface to the median of total interaction strength for interfaces before normalization')
-    idata.obsm['spatial'] = idata.obs[['row', 'col']].to_numpy()
+        sc.pp.normalize_total(adata)
+        print('Normalizing total counts per cell to the median of total counts for cells before normalization')
     print(f'Construct idata with {idata.shape[0]} interfaces and {idata.shape[1]} LR pairs.')
     return idata
 
@@ -115,6 +159,64 @@ def score(adata, lr_df, pairs, interface_meta):
     return score, direction
 
 def score_ot(adata, lr_df, interface_meta, interface_cell_pair, weight=(0.25, 0.25, 0.25, 0.25), itermax = 1000):
+    """
+    Score interactions and directions between ligands and receptors based on spatial data.
+
+    This function evaluates the interactions between ligands and receptors in the provided 
+    AnnData object, using a COT scoring mechanism that incorporates spatial information and 
+    co-expression data.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input AnnData object containing expression data and spatial coordinates.
+        
+    lr_df : DataFrame
+        DataFrame containing ligand-receptor pairs to be analyzed.
+        
+    interface_meta : DataFrame
+        Metadata associated with the interface analysis (not directly used in scoring).
+        
+    interface_cell_pair : DataFrame
+        A DataFrame containing pairs of cell indices for which interactions are to be scored.
+        
+    weight : tuple of float, optional
+        Weights for the scoring components (default is (0.25, 0.25, 0.25, 0.25)).
+        
+    itermax : int, optional
+        Maximum number of iterations for the scoring algorithm (default is 1000).
+
+    Returns
+    -------
+    idata_score : ndarray
+        A 2D numpy array containing the interaction scores for each ligand-receptor pair.
+        
+    idata_direction : ndarray
+        A 2D numpy array indicating the direction (e.g., ligand or receptor dominance) 
+        of each interaction.
+        
+    comm_network : dict
+        A dictionary representing the combined communication network, mapping 
+        ligand-receptor pairs to their scores.
+        
+    S : ndarray
+        A 2D numpy array of gene expression values for ligands.
+        
+    D : ndarray
+        A 2D numpy array of gene expression values for receptors.
+
+    Notes
+    -----
+    - The scoring mechanism relies on the spatial proximity of cells, calculating distances 
+      between pairs of cells to inform the scoring.
+    - Ligand-receptor interactions are evaluated based on COT and their co-expression in the spatial 
+      context of the cells.
+    - The output includes normalized scores for interactions and a directionality indicator.
+
+    Examples
+    --------
+    >>> interaction_scores, interaction_directions, network, S, D = score_ot(adata, lr_df, interface_meta, interface_cell_pair)
+    """
     data_genes = set(adata.var_names)
     ligs = list(set(lr_df.iloc[:,0]).intersection(data_genes))
     recs = list(set(lr_df.iloc[:,1]).intersection(data_genes))
@@ -210,6 +312,51 @@ def score_v1(adata, lr_df, pairs):
     return score
     
 def find_interfaces(adata, cluster_key, lr_df, cutoff=None, is_sc=False):
+    """
+    Identify interfaces between cells based on interaction capacity and spatial distance.
+
+    This function locates interfaces between cells by analyzing interaction capacity and 
+    their spatial distances. It applies filtering based on a specified cutoff distance and 
+    can optionally include self-interaction pairs for bulk ST data.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input AnnData object containing spatial and expression data.
+
+    cluster_key : str
+        Key in `adata.obs` that specifies the clustering information for the cells.
+
+    lr_df : DataFrame
+        DataFrame containing ligand-receptor pairs to be analyzed.
+
+    cutoff : float, optional
+        Distance cutoff for filtering interfaces (default is None). If not specified, 
+        the cutoff is determined based on the distribution of distances.
+
+    is_sc : bool, optional
+        If True, self-interaction pairs are not included (default is False).
+
+    Returns
+    -------
+    pairs : ndarray
+        Array of identified cell pairs representing interfaces.
+
+    pairs_meta : DataFrame
+        DataFrame containing metadata for the identified interfaces, including distances.
+
+    Notes
+    -----
+    - The function calculates a median distance and uses it to filter out low-capacity cells 
+      and their interfaces.
+    - Gaussian Mixture Models (GMM) are used to estimate the ideal number of interfaces 
+      based on the capacity of the cells.
+    - If `is_sc` is False, self-interaction pairs are added to the results.
+
+    Examples
+    --------
+    >>> pairs, pairs_meta = find_interfaces(adata, 'cluster_key', lr_df)
+    """
     pairs = power_tri_init(adata, lr_df)
     pairs_meta = meta(adata, cluster_key, pairs)
     
@@ -299,6 +446,39 @@ def find_pairs_v1(adata, coord_type='generic', n_neighs=6):
     return np.transpose(triu(adata.obsp['spatial_connectivities']).nonzero()).T
 
 def power_tri_init(adata, lr_df):
+    """
+    Initialize power triangulation based on interaction capacity and spatial data.
+
+    This function computes the power triangulation for a set of cells based on their 
+    spatial coordinates and ligand-receptor (LR) capacities. It normalizes the capacities, 
+    computes lifted weighted points, and determines the convex hull and Delaunay triangulation 
+    to identify interactions.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input AnnData object containing spatial coordinates and expression data.
+
+    lr_df : DataFrame
+        DataFrame containing ligand-receptor pairs to be analyzed.
+
+    Returns
+    -------
+    pairs : ndarray
+        Array of unique pairs of cell indices representing power triangulation edges.
+
+    Notes
+    -----
+    - The function normalizes the ligand-receptor capacity per cell and computes a minimum 
+      distance based on spatial coordinates.
+    - The lifted weighted points are calculated from the spatial data and capacities.
+    - The convex hull is computed to extract the Delaunay triangulation, which is then used 
+      to generate unique cell pairs representing interfaces.
+
+    Examples
+    --------
+    >>> pairs = power_tri_init(adata, lr_df)
+    """
     # normalize lr capacity per cell
     unique_lr = np.unique(lr_df[['ligand', 'receptor']].to_numpy().flatten())
     adata_exp = adata.to_df()

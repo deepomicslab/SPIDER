@@ -8,6 +8,14 @@ from . import util
 from . import ot
 
 class SPIDER():
+    """
+    The `SPIDER` class encapsulates methods for processing spatial transcriptomics data.
+
+    The class provides functionality for constructing an interface data object from spatial transcriptomics (ST) data.
+    It supports various preprocessing steps, such as filtering, normalization, and imputation, to prepare the data for
+    downstream analysis of cell-cell interactions.
+    """
+    
     def __init__(self):
         self.svi = svi
         self.pp = preprocess
@@ -28,7 +36,53 @@ class SPIDER():
             pathway_raw = None,
             is_sc=False,
             normalize_total = False,
-    ):
+        ):
+        """
+        Prepares the data for interface analysis by processing input AnnData.
+
+        This method subsets the input AnnData object to include only ligand-receptor 
+        genes and transcription factor genes, constructs interfaces from the data, 
+        and computes interface profiles.
+
+        Parameters
+        ----------
+        adata_input : AnnData
+            Input AnnData object containing spatial transcriptomics data.
+        cluster_key : str, optional
+            Key in `adata` that denotes the cluster or cell type for analysis (default is 'type').
+        is_human : bool, optional
+            Indicates whether the input data is from human samples (default is True).
+        cutoff : float, optional
+            Threshold for filtering long-distance interactions (default is None, meaning no filtering).
+        imputation : bool, optional
+            If True, performs imputation on the input data (default is False).
+        itermax : int, optional
+            Maximum number of iterations for optimization algorithms (default is 1000).
+        lr_raw : DataFrame, optional
+            Predefined ligand-receptor pairs. If None, defaults to loading based on `is_human`.
+        pathway_raw : DataFrame, optional
+            Predefined pathways. If None, defaults to loading based on `is_human`.
+        is_sc : bool, optional
+            Indicates whether the input data is single-cell data (default is False).
+        normalize_total : bool, optional
+            If True, normalizes total counts in the `adata` object (default is False).
+
+        Returns
+        -------
+        idata : AnnData
+            An AnnData object constructed from the processed interface profiles and metadata.
+
+        Notes
+        -----
+        - The method first creates a copy of the input AnnData object and releases the original.
+        - It checks if ligand-receptor pairs and pathway data are provided; if not, it loads them based on the `is_human` flag.
+        - Interfaces are constructed from the data, followed by scoring based on the provided parameters.
+        - The resulting `idata` object contains computed scores and metadata for further analysis.
+
+        Examples
+        --------
+        >>> idata = self.prep(adata_input, cluster_key='cell_type', is_human=True)
+        """
         adata = adata_input.copy()
         del adata_input
         # Prep: find lr pairs and subset adata to have only lr genes and tf genes
@@ -46,6 +100,57 @@ class SPIDER():
         return idata
 
     def find_svi(self, idata, out_f, R_path, abstract=True, overwrite=False, n_neighbors=5, alpha=0.3, threshold=0.01, pattern_prune_threshold=1e-20, predefined_pattern_number=-1, svi_number=10, n_jobs=10):
+        """
+        Find SVI and SVI patterns from interface idata.
+
+        This method processes the provided interface data to compute SVI and related patterns. 
+        It can optionally perform abstraction based on the number of interfaces present.
+
+        Parameters
+        ----------
+        idata : AnnData
+            Input AnnData object containing interface data.
+        out_f : str
+            Output directory path where results will be saved.
+        R_path : str
+            Path to the R script or binary for external processing.
+        abstract : bool, optional
+            If True, performs abstraction on the data if the number of interfaces is sufficient (default is True).
+        overwrite : bool, optional
+            If True, overwrites existing output files (default is False).
+        n_neighbors : int, optional
+            Number of neighbors to use for the abstraction process (default is 5).
+        alpha : float, optional
+            Alpha parameter for the abstraction algorithm (default is 0.3).
+        threshold : float, optional
+            Threshold for filtering SVI candidates (default is 0.01).
+        pattern_prune_threshold : float, optional
+            Threshold for pruning patterns during SVI pattern generation (default is 1e-20).
+        predefined_pattern_number : int, optional
+            If set to a positive integer, limits the number of predefined patterns (default is -1, which means no limit).
+        svi_number : int, optional
+            The number of SVI patterns to return (default is 10).
+        n_jobs : int, optional
+            Number of parallel jobs to run during processing (default is 10).
+
+        Returns
+        -------
+        idata : AnnData
+            The updated AnnData object containing results of SVI and SVI patterns.
+        meta_idata : AnnData or None
+            The meta AnnData object containing abstraction results, or None if abstraction was not performed.
+
+        Notes
+        -----
+        - The method checks if the output directory exists and creates it if it doesn't.
+        - If the number of interfaces in `idata` is less than 1000, abstraction is skipped.
+        - Various intermediate results are saved as CSV files in the specified output directory.
+        - The method utilizes external R processing for some computations, requiring R to be installed and accessible. Otherwise, only the three python methods are used.
+
+        Examples
+        --------
+        >>> result_idata, result_meta_idata = op.find_svi(idata, 'output_directory', '/path/to/R', abstract=True)
+        """
         from os.path import exists
         from os import mkdir
         
@@ -121,6 +226,46 @@ class SPIDER():
         return idata, meta_idata
         
     def cell_transform(self, idata, adata, label=None):
+        """
+        Transform cell data by integrating interaction scores and patterns.
+
+        This method updates the provided AnnData object (`adata`) with interaction patterns 
+        and scores obtained from the input data (`idata`). It can also perform gene ranking 
+        based on specified labels if provided.
+
+        Parameters
+        ----------
+        idata : AnnData
+            Input AnnData object containing interaction scores and patterns.
+
+        adata : AnnData
+            Input AnnData object to be updated with interaction data.
+
+        label : str, optional
+            The key for the label in `idata.uns['cell_meta']` used for grouping cells 
+            and performing rank gene analysis (default is None).
+
+        Returns
+        -------
+        adata : AnnData
+            Updated AnnData object with added interaction patterns and scores.
+
+        adata_lri : AnnData
+            AnnData object containing interaction scores filtered by the specified label.
+
+        adata_pattern : AnnData
+            AnnData object containing interaction patterns filtered by the specified label.
+
+        Notes
+        -----
+        - The function checks if the specified label exists in the `cell_meta` metadata. If it does, it computes ranking for genes based on interaction scores and patterns.
+        - Small clusters (with only one cell) are excluded from the analysis to ensure meaningful group comparisons.
+        - The spatial coordinates are preserved in the `obsm` attribute for both `adata_lri` and `adata_pattern`.
+
+        Examples
+        --------
+        >>> adata, adata_lri, adata_pattern = cell_transform(idata, adata, label='cell_type')
+        """
         from scanpy.tools import rank_genes_groups
         import anndata
         adata = adata[adata.obs_names.isin(idata.uns['cell_meta'].index)]
